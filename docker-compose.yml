@@ -1,0 +1,60 @@
+services:
+
+  # ── Local LLM inference ─────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── FastAPI backend ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: backend
+      dockerfile: Dockerfile
+    volumes:
+      - app_data:/app/data
+    env_file: backend/.env
+    environment:
+      # Override to use the compose service name instead of localhost.
+      OLLAMA_URL: http://ollama:11434
+      DB_PATH: /app/data/soinsight.db
+      CHROMA_PATH: /app/data/chroma
+    ports:
+      - "8000:8000"
+    depends_on:
+      - ollama
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── React frontend (nginx) ──────────────────────────────────────────────────
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  ollama_models:   # LLM weights — persisted across restarts
+  app_data:        # SQLite DB + ChromaDB vectors

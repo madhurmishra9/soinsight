@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soinsight"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "sqlmodel>=0.0.18",
+    "httpx>=0.27",
+    "tenacity>=8.3",
+    "chromadb>=0.5",
+    "ollama>=0.2",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.9",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]  # FastAPI Depends() calls in function defaults
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+# chromadb and ollama lack complete stubs; imported modules only
+exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+# SQLModel ships no mypy stubs — table=True and subclassing are unresolvable.
+module = "app.models"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# FastAPI router decorators are untyped in the stubs shipped with this version.
+module = [
+    "routers.settings", "routers.questions", "routers.analysis",
+    "routers.insights", "routers.scheduler", "app.main",
+]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# Scheduler service imports routers.settings at call time (circular avoidance).
+module = "services.scheduler"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# eval harness uses SQLModel + async patterns; same suppression as routers.
+module = ["eval.run_eval", "eval.__main__"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
