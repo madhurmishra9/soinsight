@@ -75,11 +75,23 @@ below that threshold is not surfaced as a pattern. Progress streams per stage.
 ### 4 — Dashboard
 Open **Dashboard**, select a product/tag and window, and review:
 
-- **Category breakdown** — distribution of pain-point types (bar/pie chart).
+- **Category breakdown** — distribution of pain-point types (bar chart).
+- **Sub-category frequency** — top 8 sub-categories by volume (bar chart).
 - **Top issues** — highest-frequency sub-categories.
-- **Key patterns** — recurring clusters with a recommended action from the matrix.
+- **Key patterns** — recurring clusters with a recommended action from the matrix. If no
+  cluster meets the ≥3-questions/≥2-users threshold, the section explains why and lists any
+  "emerging signals" that are close to qualifying — it never lowers the threshold or invents
+  a pattern.
 - **Technical/non-technical split** — heuristic author classification (labelled approximate).
-- **Export** — download a Markdown or JSON report for the product owner.
+- **Export** — download a Markdown or JSON report for the product owner, including every
+  underlying question with a link back to the original post.
+
+**Drill-down:** every category bar, sub-category bar, Top Issue row, and pattern card is
+clickable. Clicking opens a side panel listing the exact questions behind that number, each
+linking to the original question on your SO Enterprise instance.
+
+**Dark mode:** toggle the theme from the button at the bottom of the sidebar. The choice is
+remembered across reloads and defaults to your OS preference on first visit.
 
 The agent surfaces recommended actions (e.g. "Update Backstage or Confluence") as text only and
 never writes to any external system.
@@ -168,7 +180,7 @@ npm run dev                                          # http://localhost:5173 (pr
 
 # Tests
 cd backend
-pytest                          # 197 tests
+pytest                          # 208 tests
 ruff check .
 mypy .
 ```

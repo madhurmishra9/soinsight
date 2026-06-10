@@ -14,11 +14,13 @@ from typing import Literal
 import structlog
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.db import engine as app_engine
 from app.models import Classification, Pattern, Question
+from app.settings import settings as app_settings
+from routers.settings import _current_config
 from services.aggregator import _compute_technical_ratio, _question_has_tag
 
 log = structlog.get_logger("soinsight.routers.insights")
@@ -37,11 +39,21 @@ def get_session() -> Generator[Session, None, None]:
 
 # ─── Response models ───────────────────────────────────────────────────────────
 
+class QuestionRef(BaseModel):
+    so_id: int
+    title: str
+    score: int
+    view_count: int
+    created_at: datetime
+    url: str | None = None
+
+
 class CategoryBreakdownItem(BaseModel):
     main_category: str
     sub_category: str
     question_count: int
     distinct_users: int
+    questions: list[QuestionRef] = Field(default_factory=list)
 
 
 class PatternItem(BaseModel):
@@ -53,6 +65,7 @@ class PatternItem(BaseModel):
     first_seen: datetime | None
     last_seen: datetime | None
     summary: str | None
+    questions: list[QuestionRef] = Field(default_factory=list)
 
 
 class InsightsSummary(BaseModel):
@@ -69,9 +82,82 @@ class InsightsSummary(BaseModel):
     non_technical_ratio: float | None
 
 
+# ─── Question lookups (shared by /questions, /summary, /report) ───────────────
+
+def _question_url(so_id: int) -> str | None:
+    """Reconstruct the SO Enterprise question URL from the configured base URL."""
+    base = _current_config.get("base_url") or app_settings.so_base_url
+    if not base:
+        return None
+    site = base.split("/api/")[0].rstrip("/")
+    if not site:
+        return None
+    return f"{site}/questions/{so_id}"
+
+
+def _questions_by_category(
+    product: str, window_days: int, session: Session,
+) -> dict[tuple[str, str], list[QuestionRef]]:
+    """Group every signal (non-noise) question for a product/window by (main, sub)."""
+    since = datetime.utcnow() - timedelta(days=window_days)
+    all_qs = session.exec(select(Question).where(Question.created_at >= since)).all()
+    questions = [q for q in all_qs if _question_has_tag(q, product)]
+    q_by_id: dict[int, Question] = {q.id: q for q in questions if q.id is not None}
+    if not q_by_id:
+        return {}
+
+    cls = session.exec(
+        select(Classification).where(
+            Classification.question_id.in_(list(q_by_id.keys())),  # type: ignore[attr-defined]
+            Classification.is_noise == False,  # noqa: E712
+        )
+    ).all()
+
+    grouped: dict[tuple[str, str], list[QuestionRef]] = {}
+    for c in cls:
+        q = q_by_id.get(c.question_id)
+        if q is None:
+            continue
+        grouped.setdefault((c.main_category, c.sub_category), []).append(
+            QuestionRef(
+                so_id=q.so_id,
+                title=q.title,
+                score=q.score,
+                view_count=q.view_count,
+                created_at=q.created_at,
+                url=_question_url(q.so_id),
+            )
+        )
+
+    for key in grouped:
+        grouped[key].sort(key=lambda x: x.score, reverse=True)
+    return grouped
+
+
+def _questions_for(
+    product: str,
+    window_days: int,
+    main: str,
+    sub: str | None,
+    session: Session,
+) -> list[QuestionRef]:
+    """Questions behind a category — all sub-categories of `main` if `sub` is omitted."""
+    grouped = _questions_by_category(product, window_days, session)
+    if sub:
+        return grouped.get((main, sub), [])
+
+    out: list[QuestionRef] = []
+    for (m, _s), qs in grouped.items():
+        if m == main:
+            out.extend(qs)
+    return sorted(out, key=lambda x: x.score, reverse=True)
+
+
 # ─── Core summary builder (shared by /summary and /report) ────────────────────
 
-def _build_summary(product: str, window_days: int, session: Session) -> InsightsSummary:
+def _build_summary(
+    product: str, window_days: int, session: Session, include_questions: bool = False,
+) -> InsightsSummary:
     since = datetime.utcnow() - timedelta(days=window_days)
 
     all_qs = session.exec(select(Question).where(Question.created_at >= since)).all()
@@ -111,6 +197,8 @@ def _build_summary(product: str, window_days: int, session: Session) -> Insights
         if q is not None:
             users.setdefault(key, set()).add(q.author_id)
 
+    grouped = _questions_by_category(product, window_days, session) if include_questions else {}
+
     breakdown = sorted(
         [
             CategoryBreakdownItem(
@@ -118,6 +206,7 @@ def _build_summary(product: str, window_days: int, session: Session) -> Insights
                 sub_category=sub,
                 question_count=counts[(main, sub)],
                 distinct_users=len(users.get((main, sub), set())),
+                questions=grouped.get((main, sub), []),
             )
             for (main, sub) in counts
         ],
@@ -144,6 +233,7 @@ def _build_summary(product: str, window_days: int, session: Session) -> Insights
                 first_seen=p.first_seen,
                 last_seen=p.last_seen,
                 summary=p.summary,
+                questions=grouped.get((p.main_category, p.sub_category), []),
             )
             for p in db_patterns
         ],
@@ -186,6 +276,15 @@ def _build_summary(product: str, window_days: int, session: Session) -> Insights
 
 
 # ─── Markdown renderer ─────────────────────────────────────────────────────────
+
+def _q_lines(questions: list[QuestionRef], indent: str = "   ") -> list[str]:
+    """Render question references as linked (or titled) bullet lines."""
+    out: list[str] = []
+    for q in questions:
+        link = f"[{q.title}]({q.url})" if q.url else f"{q.title} (#{q.so_id})"
+        out.append(f"{indent}- {link} — score {q.score}, {q.view_count} views")
+    return out
+
 
 def _render_markdown(s: InsightsSummary) -> str:
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
@@ -231,6 +330,8 @@ def _render_markdown(s: InsightsSummary) -> str:
                 f"{i}. **{item.main_category} / {item.sub_category}**"
                 f" — {item.question_count} questions from {item.distinct_users} users"
             )
+            lines += _q_lines(item.questions)
+            lines.append("")
 
     if s.patterns:
         lines += ["", "## Key Patterns", ""]
@@ -246,11 +347,24 @@ def _render_markdown(s: InsightsSummary) -> str:
             if p.summary:
                 lines.append(f"- **Summary:** {p.summary}")
             lines.append("")
+            lines += _q_lines(p.questions, indent="")
+            lines.append("")
 
     if s.recommended_actions:
         lines += ["## Recommended Actions", ""]
         for i, action in enumerate(s.recommended_actions, 1):
             lines.append(f"{i}. {action}")
+        lines.append("")
+
+    if s.category_breakdown:
+        lines += ["", "## All Questions by Category", ""]
+        for item in s.category_breakdown:
+            lines.append(
+                f"### {item.main_category} / {item.sub_category}"
+                f" ({item.question_count} questions, {item.distinct_users} users)"
+            )
+            lines += _q_lines(item.questions, indent="")
+            lines.append("")
 
     return "\n".join(lines) + "\n"
 
@@ -299,6 +413,18 @@ async def get_patterns(
     )
 
 
+@router.get("/questions", response_model=list[QuestionRef])
+async def get_questions(
+    product: str = Query(..., description="Product/tag"),
+    main: str = Query(..., description="Main category"),
+    sub: str | None = Query(None, description="Sub-category (omit for all of `main`)"),
+    window: int = Query(30, ge=1, le=365, description="Window in days"),
+    session: Session = Depends(get_session),
+) -> list[QuestionRef]:
+    """Questions behind a category — drives every drill-down surface on the dashboard."""
+    return _questions_for(product, window, main, sub, session)
+
+
 @router.get("/report")
 async def get_report(
     product: str = Query(..., description="Product/tag to export"),
@@ -307,7 +433,7 @@ async def get_report(
     session: Session = Depends(get_session),
 ) -> Response:
     """Product-Owner export — JSON or Markdown."""
-    summary = _build_summary(product, window, session)
+    summary = _build_summary(product, window, session, include_questions=True)
     slug = product.replace(" ", "_")
 
     if report_format == "json":

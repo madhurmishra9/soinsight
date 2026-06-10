@@ -305,6 +305,64 @@ def test_patterns_unknown_product_returns_empty(seeded_client: TestClient) -> No
     assert data == []
 
 
+# ─── GET /api/insights/questions ──────────────────────────────────────────────
+
+
+def test_questions_with_sub_returns_matching_questions(seeded_client: TestClient) -> None:
+    r = seeded_client.get(
+        "/api/insights/questions",
+        params={
+            "product": "python",
+            "main": "Technical",
+            "sub": "Reliability issues or instability",
+            "window": 30,
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 3
+    assert {q["so_id"] for q in data} == {1, 2, 3}
+    assert all(q["url"] for q in data)
+
+
+def test_questions_without_sub_includes_all_subs_of_main(seeded_client: TestClient) -> None:
+    with_sub = seeded_client.get(
+        "/api/insights/questions",
+        params={
+            "product": "python",
+            "main": "Technical",
+            "sub": "Reliability issues or instability",
+        },
+    ).json()
+    without_sub = seeded_client.get(
+        "/api/insights/questions",
+        params={"product": "python", "main": "Technical"},
+    ).json()
+    assert len(without_sub) >= len(with_sub)
+    assert {q["so_id"] for q in with_sub}.issubset({q["so_id"] for q in without_sub})
+
+
+def test_questions_unknown_category_returns_empty(seeded_client: TestClient) -> None:
+    r = seeded_client.get(
+        "/api/insights/questions",
+        params={
+            "product": "python",
+            "main": "Adoption / Migration",
+            "sub": "Difficulty getting started",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_questions_excludes_noise(seeded_client: TestClient) -> None:
+    r = seeded_client.get(
+        "/api/insights/questions",
+        params={"product": "python", "main": "Misuse / Noise", "sub": "Incorrect usage"},
+    )
+    assert r.json() == []
+
+
 # ─── GET /api/insights/report ─────────────────────────────────────────────────
 
 
@@ -357,6 +415,30 @@ def test_report_md_recommended_action_present(seeded_client: TestClient) -> None
 def test_report_invalid_format_returns_422(seeded_client: TestClient) -> None:
     r = seeded_client.get("/api/insights/report?product=python&format=xml")
     assert r.status_code == 422
+
+
+def test_report_json_includes_questions_on_breakdown_and_patterns(
+    seeded_client: TestClient,
+) -> None:
+    data = seeded_client.get("/api/insights/report?product=python&format=json").json()
+    for item in data["category_breakdown"]:
+        assert len(item["questions"]) == item["question_count"]
+    for p in data["patterns"]:
+        assert len(p["questions"]) == p["question_count"]
+
+
+def test_report_md_has_all_questions_appendix(seeded_client: TestClient) -> None:
+    md = seeded_client.get("/api/insights/report?product=python&format=md").text
+    assert "## All Questions by Category" in md
+    assert "Question 1" in md  # so_id 1 — Technical / Reliability
+
+
+def test_summary_does_not_embed_questions(seeded_client: TestClient) -> None:
+    data = seeded_client.get("/api/insights/summary?product=python&window=30").json()
+    for item in data["category_breakdown"]:
+        assert item["questions"] == []
+    for p in data["patterns"]:
+        assert p["questions"] == []
 
 
 # ─── _render_markdown unit test ───────────────────────────────────────────────

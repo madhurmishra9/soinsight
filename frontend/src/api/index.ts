@@ -5,6 +5,7 @@ import type {
   FetchRequest,
   InsightsSummary,
   PatternItem,
+  QuestionRef,
   RunResponse,
   SettingsPayload,
 } from '../types/api'
@@ -40,6 +41,9 @@ export const getSummary = (product: string, window: number) =>
 
 export const getPatterns = (product?: string, window?: number) =>
   api.get<PatternItem[]>('/api/insights/patterns', { params: { product, window } })
+
+export const getQuestions = (product: string, window: number, main: string, sub?: string) =>
+  api.get<QuestionRef[]>('/api/insights/questions', { params: { product, window, main, sub } })
 
 export const reportUrl = (product: string, window: number, format: 'md' | 'json') =>
   `/api/insights/report?product=${encodeURIComponent(product)}&window=${window}&format=${format}`

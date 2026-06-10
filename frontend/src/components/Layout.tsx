@@ -1,7 +1,10 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { BarChart2, Download, LayoutDashboard, Settings2 } from 'lucide-react'
+import { BarChart2, Download, LayoutDashboard, Moon, Settings2, Sun } from 'lucide-react'
+import { useTheme } from '../hooks/useTheme'
 
 export function Layout() {
+  const { theme, toggle } = useTheme()
+
   return (
     <div className="layout">
       <nav className="sidebar">
@@ -25,6 +28,11 @@ export function Layout() {
         <NavLink to="/dashboard" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <LayoutDashboard size={16} /> Dashboard
         </NavLink>
+
+        <button className="theme-toggle" onClick={toggle} title="Toggle theme">
+          {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+        </button>
       </nav>
 
       <main className="main">

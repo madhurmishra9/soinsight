@@ -1,8 +1,18 @@
+export interface QuestionRef {
+  so_id: number
+  title: string
+  score: number
+  view_count: number
+  created_at: string
+  url: string | null
+}
+
 export interface CategoryBreakdownItem {
   main_category: string
   sub_category: string
   question_count: number
   distinct_users: number
+  questions?: QuestionRef[]
 }
 
 export interface PatternItem {
@@ -14,6 +24,7 @@ export interface PatternItem {
   first_seen: string | null
   last_seen: string | null
   summary: string | null
+  questions?: QuestionRef[]
 }
 
 export interface InsightsSummary {

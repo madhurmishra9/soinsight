@@ -45,9 +45,9 @@ async def _run_ingestion(
     queue: asyncio.Queue[dict[str, Any] | None],
 ) -> None:
     """Background coroutine: create an SO client and run ingestion."""
-    base_url = _current_config.get("so_base_url") or settings.so_base_url
-    api_key = _current_config.get("so_api_key") or settings.so_api_key
-    team: str | None = _current_config.get("so_team") or settings.so_team or None
+    base_url = _current_config.get("base_url") or settings.so_base_url
+    api_key = _current_config.get("api_key") or settings.so_api_key
+    team: str | None = _current_config.get("team") or settings.so_team or None
 
     auth = SOAuth(mode="api_key", api_key=api_key or None)
     try:

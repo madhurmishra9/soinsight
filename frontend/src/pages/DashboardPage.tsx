@@ -10,11 +10,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { Download, FileJson, FileText, Loader, RefreshCw, Users } from 'lucide-react'
+import { FileJson, FileText, Loader, RefreshCw, Users } from 'lucide-react'
 import { getSummary, downloadReport } from '../api'
 import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
 import { CardSkeleton, StatsSkeleton } from '../components/Skeleton'
+import { QuestionDrawer } from '../components/QuestionDrawer'
+import type { Drill } from '../components/QuestionDrawer'
+import { cssVar, useThemeTick } from '../hooks/useTheme'
 import type { InsightsSummary, CategoryBreakdownItem, PatternItem } from '../types/api'
 
 const WINDOWS = [7, 14, 30, 60, 90]
@@ -48,7 +51,7 @@ function StatCard({ value, label, sub }: { value: string | number; label: string
   )
 }
 
-function CategoryChart({ breakdown }: { breakdown: CategoryBreakdownItem[] }) {
+function CategoryChart({ breakdown, onSelect }: { breakdown: CategoryBreakdownItem[]; onSelect: (d: Drill) => void }) {
   // Aggregate by main category
   const byMain: Record<string, number> = {}
   for (const item of breakdown) {
@@ -64,19 +67,25 @@ function CategoryChart({ breakdown }: { breakdown: CategoryBreakdownItem[] }) {
     <div className="chart-wrap">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 32 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+          <CartesianGrid strokeDasharray="3 3" stroke={cssVar('--grid')} />
           <XAxis
             dataKey="name"
-            tick={{ fontSize: 11 }}
+            tick={{ fontSize: 11, fill: cssVar('--axis') }}
             angle={-25}
             textAnchor="end"
             interval={0}
           />
-          <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+          <YAxis tick={{ fontSize: 11, fill: cssVar('--axis') }} allowDecimals={false} />
           <Tooltip
+            contentStyle={{ background: cssVar('--tooltip-bg'), border: `1px solid ${cssVar('--border')}`, color: cssVar('--text') }}
             formatter={(val, _name, entry) => [val ?? 0, (entry.payload as { fullName?: string } | undefined)?.fullName ?? '']}
           />
-          <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+          <Bar
+            dataKey="count"
+            radius={[4, 4, 0, 0]}
+            cursor="pointer"
+            onClick={(d: any) => onSelect({ main: d?.fullName, label: d?.fullName })}
+          >
             {data.map((d, i) => <Cell key={i} fill={d.color} />)}
           </Bar>
         </BarChart>
@@ -85,10 +94,11 @@ function CategoryChart({ breakdown }: { breakdown: CategoryBreakdownItem[] }) {
   )
 }
 
-function FrequencyChart({ breakdown }: { breakdown: CategoryBreakdownItem[] }) {
+function FrequencyChart({ breakdown, onSelect }: { breakdown: CategoryBreakdownItem[]; onSelect: (d: Drill) => void }) {
   const top = [...breakdown].slice(0, 8).map((item, idx) => ({
     name: item.sub_category.length > 28 ? item.sub_category.slice(0, 27) + '…' : item.sub_category,
     fullName: item.sub_category,
+    main: item.main_category,
     count: item.question_count,
     color: catColor(item.main_category, idx),
   }))
@@ -99,13 +109,19 @@ function FrequencyChart({ breakdown }: { breakdown: CategoryBreakdownItem[] }) {
     <div className="chart-wrap">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={top} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
-          <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
-          <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={180} />
+          <CartesianGrid strokeDasharray="3 3" stroke={cssVar('--grid')} horizontal={false} />
+          <XAxis type="number" tick={{ fontSize: 11, fill: cssVar('--axis') }} allowDecimals={false} />
+          <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: cssVar('--axis') }} width={180} />
           <Tooltip
+            contentStyle={{ background: cssVar('--tooltip-bg'), border: `1px solid ${cssVar('--border')}`, color: cssVar('--text') }}
             formatter={(val, _name, entry) => [val ?? 0, (entry.payload as { fullName?: string } | undefined)?.fullName ?? '']}
           />
-          <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+          <Bar
+            dataKey="count"
+            radius={[0, 4, 4, 0]}
+            cursor="pointer"
+            onClick={(d: any) => onSelect({ main: d?.main, sub: d?.fullName, label: d?.fullName })}
+          >
             {top.map((d, i) => <Cell key={i} fill={d.color} />)}
           </Bar>
         </BarChart>
@@ -114,12 +130,20 @@ function FrequencyChart({ breakdown }: { breakdown: CategoryBreakdownItem[] }) {
   )
 }
 
-function TopIssues({ issues }: { issues: CategoryBreakdownItem[] }) {
+function TopIssues({ issues, onSelect }: { issues: CategoryBreakdownItem[]; onSelect: (d: Drill) => void }) {
   if (!issues.length) return <div className="text-muted text-sm">No issues to display</div>
   return (
     <ol style={{ paddingLeft: 18 }}>
       {issues.map((item, i) => (
-        <li key={i} style={{ marginBottom: 10 }}>
+        <li
+          key={i}
+          style={{ marginBottom: 10, cursor: 'pointer' }}
+          onClick={() => onSelect({
+            main: item.main_category,
+            sub: item.sub_category,
+            label: `${item.main_category} / ${item.sub_category}`,
+          })}
+        >
           <div className="flex items-center gap-8">
             <span style={{ fontWeight: 600 }}>{item.main_category} / {item.sub_category}</span>
             <span className="badge badge-blue">{item.question_count}q</span>
@@ -131,11 +155,48 @@ function TopIssues({ issues }: { issues: CategoryBreakdownItem[] }) {
   )
 }
 
-function PatternsSection({ patterns }: { patterns: PatternItem[] }) {
+function PatternsSection({ patterns, topIssues, totalSignal, onSelect }: {
+  patterns: PatternItem[]
+  topIssues: CategoryBreakdownItem[]
+  totalSignal: number
+  onSelect: (d: Drill) => void
+}) {
   if (!patterns.length) {
+    if (totalSignal === 0) {
+      return (
+        <div className="alert alert-info" style={{ marginBottom: 0 }}>
+          No analysed questions for this tag in this window. Run analysis, widen the window, or fetch more questions.
+        </div>
+      )
+    }
+    const emerging = topIssues.filter((i) => i.question_count >= 2).slice(0, 3)
     return (
-      <div className="alert alert-info" style={{ marginBottom: 0 }}>
-        No patterns yet — run analysis first (patterns require ≥3 questions from ≥2 distinct users).
+      <div>
+        <div className="alert alert-info" style={{ marginBottom: 0 }}>
+          No pattern met the threshold (≥3 questions from ≥2 distinct users) in this window.
+          {' '}{totalSignal} signal question{totalSignal === 1 ? '' : 's'} analysed — too few or too spread out to cluster.
+        </div>
+        {emerging.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div className="card-subtitle">Emerging signals (below pattern threshold)</div>
+            <ul style={{ listStyle: 'none', paddingLeft: 0 }}>
+              {emerging.map((e, i) => (
+                <li
+                  key={i}
+                  style={{ cursor: 'pointer', marginBottom: 8 }}
+                  onClick={() => onSelect({
+                    main: e.main_category,
+                    sub: e.sub_category,
+                    label: `${e.main_category} / ${e.sub_category}`,
+                  })}
+                >
+                  <span style={{ fontWeight: 600 }}>{e.main_category} / {e.sub_category}</span>
+                  <span className="muted"> · {e.question_count} questions · {e.distinct_users} users</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     )
   }
@@ -152,10 +213,18 @@ function PatternsSection({ patterns }: { patterns: PatternItem[] }) {
           </div>
           {p.summary && <div className="pattern-meta">{p.summary}</div>}
           {p.suggested_action && (
-            <div className="pattern-action">
-              <Download size={12} /> {p.suggested_action}
-            </div>
+            <div className="pattern-action">→ {p.suggested_action}</div>
           )}
+          <button
+            className="btn btn-link btn-sm"
+            onClick={() => onSelect({
+              main: p.main_category,
+              sub: p.sub_category,
+              label: `${p.main_category} / ${p.sub_category}`,
+            })}
+          >
+            View {p.question_count} questions
+          </button>
         </div>
       ))}
     </>
@@ -169,8 +238,8 @@ function TechnicalSplit({ techRatio, nonTechRatio }: { techRatio: number | null;
   const nonTech = Math.round((nonTechRatio ?? 0) * 100)
 
   const data = [
-    { name: `Technical (${tech}%)`, value: tech, fill: '#2563eb' },
-    { name: `Non-technical (${nonTech}%)`, value: nonTech, fill: '#94a3b8' },
+    { name: `Technical (${tech}%)`, value: tech, fill: cssVar('--primary') },
+    { name: `Non-technical (${nonTech}%)`, value: nonTech, fill: cssVar('--text-muted') },
   ]
 
   return (
@@ -178,10 +247,13 @@ function TechnicalSplit({ techRatio, nonTechRatio }: { techRatio: number | null;
       <div className="chart-wrap-sm">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-            <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-            <YAxis tick={{ fontSize: 11 }} unit="%" domain={[0, 100]} />
-            <Tooltip formatter={(v) => [`${v ?? 0}%`]} />
-            <Legend />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: cssVar('--axis') }} />
+            <YAxis tick={{ fontSize: 11, fill: cssVar('--axis') }} unit="%" domain={[0, 100]} />
+            <Tooltip
+              contentStyle={{ background: cssVar('--tooltip-bg'), border: `1px solid ${cssVar('--border')}`, color: cssVar('--text') }}
+              formatter={(v) => [`${v ?? 0}%`]}
+            />
+            <Legend wrapperStyle={{ color: cssVar('--text') }} />
             <Bar dataKey="value" radius={[4, 4, 0, 0]}>
               {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
             </Bar>
@@ -198,12 +270,14 @@ function TechnicalSplit({ techRatio, nonTechRatio }: { techRatio: number | null;
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
+  useThemeTick()
   const { knownProducts } = useApp()
   const [product, setProduct] = useState(knownProducts[0] ?? '')
   const [windowDays, setWindowDays] = useState(30)
   const [summary, setSummary] = useState<InsightsSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [drill, setDrill] = useState<Drill | null>(null)
 
   const load = async () => {
     if (!product.trim()) return
@@ -325,12 +399,12 @@ export function DashboardPage() {
           <div className="grid-2" style={{ marginBottom: 16 }}>
             <div className="card">
               <div className="card-title">Category distribution</div>
-              <CategoryChart breakdown={summary.category_breakdown} />
+              <CategoryChart breakdown={summary.category_breakdown} onSelect={setDrill} />
             </div>
             <div className="card">
               <div className="card-title">Sub-category frequency</div>
               <div className="card-subtitle">Top 8 sub-categories by volume</div>
-              <FrequencyChart breakdown={summary.category_breakdown} />
+              <FrequencyChart breakdown={summary.category_breakdown} onSelect={setDrill} />
             </div>
           </div>
 
@@ -338,7 +412,7 @@ export function DashboardPage() {
             {/* Top issues */}
             <div className="card">
               <div className="card-title">Top issues</div>
-              <TopIssues issues={summary.top_issues} />
+              <TopIssues issues={summary.top_issues} onSelect={setDrill} />
             </div>
 
             {/* Technical split */}
@@ -354,7 +428,12 @@ export function DashboardPage() {
             <div className="card-subtitle">
               Clusters with ≥3 questions from ≥2 distinct users · recommended action per pattern
             </div>
-            <PatternsSection patterns={summary.patterns} />
+            <PatternsSection
+              patterns={summary.patterns}
+              topIssues={summary.top_issues}
+              totalSignal={summary.total_questions}
+              onSelect={setDrill}
+            />
           </div>
 
           {/* Recommended actions */}
@@ -368,6 +447,13 @@ export function DashboardPage() {
               </ol>
             </div>
           )}
+
+          <QuestionDrawer
+            target={drill}
+            product={product.trim()}
+            windowDays={windowDays}
+            onClose={() => setDrill(null)}
+          />
         </>
       )}
 
