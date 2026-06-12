@@ -31,6 +31,9 @@ _run_queues: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
 class FetchRequest(BaseModel):
     products: list[str]
     window_days: int = 30
+    from_date: str | None = None
+    to_date: str | None = None
+    incremental: bool = True
 
 
 class FetchResponse(BaseModel):
@@ -43,13 +46,16 @@ async def _run_ingestion(
     products: list[str],
     window_days: int,
     queue: asyncio.Queue[dict[str, Any] | None],
+    from_date: str | None = None,
+    to_date: str | None = None,
+    incremental: bool = True,
 ) -> None:
     """Background coroutine: create an SO client and run ingestion."""
     base_url = _current_config.get("base_url") or settings.so_base_url
     api_key = _current_config.get("api_key") or settings.so_api_key
     team: str | None = _current_config.get("team") or settings.so_team or None
 
-    auth = SOAuth(mode="api_key", api_key=api_key or None)
+    auth = SOAuth(mode="bearer", api_key=api_key or None)
     try:
         async with SOClient(base_url=base_url, auth=auth) as client:
             service = IngestService(client=client, budget=_budget)
@@ -59,6 +65,9 @@ async def _run_ingestion(
                 team=team,
                 queue=queue,
                 engine=app_engine,
+                from_date=from_date,
+                to_date=to_date,
+                incremental=incremental,
             )
     except Exception as exc:
         log.error("ingest_background_error", run_id=run_id, error=str(exc))
@@ -66,7 +75,7 @@ async def _run_ingestion(
         await queue.put(None)
 
 
-@router.post("", response_model=FetchResponse)
+@router.post("/fetch", response_model=FetchResponse)
 async def fetch_questions(
     body: FetchRequest,
     background_tasks: BackgroundTasks,
@@ -80,7 +89,8 @@ async def fetch_questions(
     _run_queues[run_id] = queue
 
     background_tasks.add_task(
-        _run_ingestion, run_id, body.products, body.window_days, queue
+        _run_ingestion, run_id, body.products, body.window_days, queue,
+        body.from_date, body.to_date, body.incremental,
     )
     log.info("ingest_started", run_id=run_id, products=body.products)
     return FetchResponse(run_id=run_id, status="started")

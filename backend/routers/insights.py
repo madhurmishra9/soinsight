@@ -8,7 +8,7 @@ technical_ratio is APPROXIMATE (question-tag heuristic, not a verified user attr
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Literal
 
 import structlog
@@ -17,6 +17,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
+from app.dates import resolve_range
 from app.db import engine as app_engine
 from app.models import Classification, Pattern, Question
 from app.settings import settings as app_settings
@@ -78,6 +79,7 @@ class InsightsSummary(BaseModel):
     patterns: list[PatternItem]
     recommended_actions: list[str]         # unique, in pattern-frequency order
     # APPROXIMATE — question-tag heuristic; never a verified user attribute
+    noise_questions: list[QuestionRef] = []
     technical_ratio: float | None
     non_technical_ratio: float | None
 
@@ -97,10 +99,13 @@ def _question_url(so_id: int) -> str | None:
 
 def _questions_by_category(
     product: str, window_days: int, session: Session,
+    from_date: str | None = None, to_date: str | None = None,
 ) -> dict[tuple[str, str], list[QuestionRef]]:
     """Group every signal (non-noise) question for a product/window by (main, sub)."""
-    since = datetime.utcnow() - timedelta(days=window_days)
-    all_qs = session.exec(select(Question).where(Question.created_at >= since)).all()
+    since, until = resolve_range(window_days, from_date, to_date)
+    all_qs = session.exec(
+        select(Question).where(Question.created_at >= since, Question.created_at <= until)
+    ).all()
     questions = [q for q in all_qs if _question_has_tag(q, product)]
     q_by_id: dict[int, Question] = {q.id: q for q in questions if q.id is not None}
     if not q_by_id:
@@ -140,27 +145,60 @@ def _questions_for(
     main: str,
     sub: str | None,
     session: Session,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    noise: bool = False,
 ) -> list[QuestionRef]:
-    """Questions behind a category — all sub-categories of `main` if `sub` is omitted."""
-    grouped = _questions_by_category(product, window_days, session)
+    """Questions behind a category, or noise questions when noise=True."""
+    if noise:
+        since, until = resolve_range(window_days, from_date, to_date)
+        all_qs = session.exec(
+            select(Question).where(Question.created_at >= since, Question.created_at <= until)
+        ).all()
+        questions = [q for q in all_qs if _question_has_tag(q, product)]
+        q_by_id = {q.id: q for q in questions if q.id is not None}
+        if not q_by_id:
+            return []
+        noise_cls = session.exec(
+            select(Classification).where(
+                Classification.question_id.in_(list(q_by_id.keys())),  # type: ignore[attr-defined]
+                Classification.is_noise == True,  # noqa: E712
+            )
+        ).all()
+        out = []
+        for c in noise_cls:
+            q = q_by_id.get(c.question_id)
+            if q:
+                out.append(QuestionRef(
+                    so_id=q.so_id, title=q.title, score=q.score,
+                    view_count=q.view_count, created_at=q.created_at,
+                    url=_question_url(q.so_id),
+                ))
+        return sorted(out, key=lambda x: x.score, reverse=True)
+
+    grouped = _questions_by_category(product, window_days, session, from_date, to_date)
     if sub:
         return grouped.get((main, sub), [])
 
-    out: list[QuestionRef] = []
+    out2: list[QuestionRef] = []
     for (m, _s), qs in grouped.items():
         if m == main:
-            out.extend(qs)
-    return sorted(out, key=lambda x: x.score, reverse=True)
+            out2.extend(qs)
+    return sorted(out2, key=lambda x: x.score, reverse=True)
 
 
 # ─── Core summary builder (shared by /summary and /report) ────────────────────
 
 def _build_summary(
-    product: str, window_days: int, session: Session, include_questions: bool = False,
+    product: str, window_days: int, session: Session,
+    include_questions: bool = False,
+    from_date: str | None = None, to_date: str | None = None,
 ) -> InsightsSummary:
-    since = datetime.utcnow() - timedelta(days=window_days)
+    since, until = resolve_range(window_days, from_date, to_date)
 
-    all_qs = session.exec(select(Question).where(Question.created_at >= since)).all()
+    all_qs = session.exec(
+        select(Question).where(Question.created_at >= since, Question.created_at <= until)
+    ).all()
     questions = [q for q in all_qs if _question_has_tag(q, product)]
     q_by_id: dict[int, Question] = {q.id: q for q in questions if q.id is not None}
 
@@ -197,7 +235,22 @@ def _build_summary(
         if q is not None:
             users.setdefault(key, set()).add(q.author_id)
 
-    grouped = _questions_by_category(product, window_days, session) if include_questions else {}
+    grouped = (
+        _questions_by_category(product, window_days, session, from_date, to_date)
+        if include_questions
+        else {}
+    )
+    noise_qs: list[QuestionRef] = []
+    if include_questions:
+        for c in noise_cls:
+            q = q_by_id.get(c.question_id)
+            if q:
+                noise_qs.append(QuestionRef(
+                    so_id=q.so_id, title=q.title, score=q.score,
+                    view_count=q.view_count, created_at=q.created_at,
+                    url=_question_url(q.so_id),
+                ))
+        noise_qs.sort(key=lambda x: x.score, reverse=True)
 
     breakdown = sorted(
         [
@@ -266,6 +319,7 @@ def _build_summary(
         window_days=window_days,
         total_questions=len(signal_cls),
         noise_count=len(noise_cls),
+        noise_questions=noise_qs,
         category_breakdown=breakdown,
         top_issues=breakdown[:5],
         patterns=pattern_items,
@@ -350,6 +404,12 @@ def _render_markdown(s: InsightsSummary) -> str:
             lines += _q_lines(p.questions, indent="")
             lines.append("")
 
+    if s.noise_questions:
+        lines += ["", "## Noise / Excluded Questions",
+                   "_These questions were classified as low-quality, duplicate, or off-topic.", ""]
+        lines += _q_lines(s.noise_questions, indent="")
+        lines.append("")
+
     if s.recommended_actions:
         lines += ["## Recommended Actions", ""]
         for i, action in enumerate(s.recommended_actions, 1):
@@ -375,10 +435,12 @@ def _render_markdown(s: InsightsSummary) -> str:
 async def get_summary(
     product: str = Query(..., description="Product/tag to summarise"),
     window: int = Query(30, ge=1, le=365, description="Window in days"),
+    from_date: str | None = Query(None, description="YYYY-MM-DD — overrides window"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD — overrides window"),
     session: Session = Depends(get_session),
 ) -> InsightsSummary:
     """One summary per product/tag: category breakdown, patterns, recommendations."""
-    return _build_summary(product, window, session)
+    return _build_summary(product, window, session, from_date=from_date, to_date=to_date)
 
 
 @router.get("/patterns", response_model=list[PatternItem])
@@ -419,10 +481,13 @@ async def get_questions(
     main: str = Query(..., description="Main category"),
     sub: str | None = Query(None, description="Sub-category (omit for all of `main`)"),
     window: int = Query(30, ge=1, le=365, description="Window in days"),
+    from_date: str | None = Query(None, description="YYYY-MM-DD"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD"),
+    noise: bool = Query(False, description="Return noise/excluded questions instead of signal"),
     session: Session = Depends(get_session),
 ) -> list[QuestionRef]:
-    """Questions behind a category — drives every drill-down surface on the dashboard."""
-    return _questions_for(product, window, main, sub, session)
+    """Questions behind a category, or noise questions when noise=true."""
+    return _questions_for(product, window, main, sub, session, from_date, to_date, noise)
 
 
 @router.get("/report")
@@ -430,10 +495,14 @@ async def get_report(
     product: str = Query(..., description="Product/tag to export"),
     window: int = Query(30, ge=1, le=365, description="Window in days"),
     report_format: Literal["md", "json"] = Query("json", alias="format"),
+    from_date: str | None = Query(None, description="YYYY-MM-DD"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD"),
     session: Session = Depends(get_session),
 ) -> Response:
     """Product-Owner export — JSON or Markdown."""
-    summary = _build_summary(product, window, session, include_questions=True)
+    summary = _build_summary(
+        product, window, session, include_questions=True, from_date=from_date, to_date=to_date
+    )
     slug = product.replace(" ", "_")
 
     if report_format == "json":

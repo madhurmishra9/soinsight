@@ -162,7 +162,7 @@ class SchedulerService:
         api_key = _current_config.get("api_key") or settings.so_api_key
         team: str | None = _current_config.get("team") or settings.so_team or None
 
-        auth = SOAuth(mode="api_key", api_key=api_key or None)
+        auth = SOAuth(mode="bearer", api_key=api_key or None)
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         try:
             async with SOClient(base_url=base_url, auth=auth) as client:

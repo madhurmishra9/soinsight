@@ -11,25 +11,26 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 import structlog
 from sqlalchemy import Engine
-from sqlmodel import Session, select
+from sqlalchemy import func as sql_func
+from sqlmodel import Session, col, select
 
+from app.dates import resolve_range
 from app.models import Question, Run
 from services.so_client import SOClient
 
 log = structlog.get_logger("soinsight.ingestion")
 
 # ─── TODO: verify all of these against <SO_BASE_URL>/api/v3 Swagger ──────────
-_SO_QUESTION_ID = "question_id"    # may be "id"
-_SO_CREATION_DATE = "creation_date"  # may be "created_at" or "creation_time"
-_SO_AUTHOR_KEY = "owner"           # may be "author"
-_SO_AUTHOR_ID = "user_id"          # may be "account_id"
-_SO_AUTHOR_ROLE = "user_type"      # may be "role" or "account_type"
-_SO_HAS_ACCEPTED = "is_answered"   # may be "has_accepted_answer"
+_SO_QUESTION_ID = "id"
+_SO_CREATION_DATE = "creationDate"
+_SO_AUTHOR_KEY = "owner"
+_SO_AUTHOR_ID = "id"
+_SO_HAS_ACCEPTED = "isAnswered"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DAILY_BUDGET = 9_500  # 95 % of the 10 000/day quota — remaining is headroom
@@ -92,21 +93,36 @@ def _map_question(raw: dict[str, Any], team_slug: str | None = None) -> dict[str
     All other fields fall back to safe defaults when absent.
     """
     owner: dict[str, Any] = raw.get(_SO_AUTHOR_KEY) or {}
-    tags_raw: list[str] = raw.get("tags") or []
-    creation_ts = raw.get(_SO_CREATION_DATE, 0)
-    created_at = datetime.utcfromtimestamp(creation_ts) if creation_ts else datetime.utcnow()
+
+    tags_raw = raw.get("tags") or []
+    if tags_raw and isinstance(tags_raw[0], dict):
+        tag_names = [t["name"] for t in tags_raw if isinstance(t, dict) and "name" in t]
+    else:
+        tag_names = [str(t) for t in tags_raw]
+
+    raw_date = raw.get(_SO_CREATION_DATE)
+    if isinstance(raw_date, str) and raw_date:
+        try:
+            parsed = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+            created_at = parsed.replace(tzinfo=None)
+        except ValueError:
+            created_at = datetime.utcnow()
+    elif isinstance(raw_date, (int, float)) and raw_date:
+        created_at = datetime.utcfromtimestamp(raw_date)
+    else:
+        created_at = datetime.utcnow()
 
     return {
         "so_id": int(raw[_SO_QUESTION_ID]),
         "title": str(raw.get("title") or ""),
-        "body": str(raw.get("body") or raw.get("body_markdown") or ""),
-        "tags": json.dumps(tags_raw),
+        "body": str(raw.get("body") or raw.get("bodyMarkdown") or ""),
+        "tags": json.dumps(tag_names),
         "score": int(raw.get("score") or 0),
-        "view_count": int(raw.get("view_count") or 0),
+        "view_count": int(raw.get("viewCount") or 0),
         "created_at": created_at,
-        "author_id": int(owner.get(_SO_AUTHOR_ID) or 0),
-        "author_role": str(owner[_SO_AUTHOR_ROLE]) if owner.get(_SO_AUTHOR_ROLE) else None,
-        "answer_count": int(raw.get("answer_count") or 0),
+        "author_id": int(owner.get(_SO_AUTHOR_ID) or owner.get("accountId") or 0),
+        "author_role": owner.get("role"),
+        "answer_count": int(raw.get("answerCount") or 0),
         "has_accepted": bool(raw.get(_SO_HAS_ACCEPTED)),
         "team_slug": team_slug,
     }
@@ -133,13 +149,17 @@ class IngestService:
         team: str | None,
         queue: asyncio.Queue[dict[str, Any] | None],
         engine: Engine,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        incremental: bool = True,
     ) -> IngestResult:
         """
-        Fetch questions for each tag in *products* created within *window_days*,
-        upsert into SQLite, and push SSE-style progress dicts into *queue*.
-        Always puts a None sentinel into *queue* when complete.
+        Fetch questions for each tag in *products* created within *window_days*.
+        When incremental=True (default), each tag's since is advanced to the
+        most recent question already in DB for that tag, so only new questions
+        are fetched from SO. Always puts a None sentinel into *queue* when done.
         """
-        since = datetime.utcnow() - timedelta(days=window_days)
+        since, until = resolve_range(window_days, from_date, to_date)
         result = IngestResult(tags=list(products))
 
         with Session(engine) as session:
@@ -166,8 +186,22 @@ class IngestService:
                     )
                     break
 
+                # Incremental: advance since to last known question for this tag
+                effective_since = since
+                if incremental:
+                    last_ts = session.exec(
+                        select(sql_func.max(Question.created_at)).where(
+                            col(Question.tags).like(f'%"{tag}"%')
+                        )
+                    ).first()
+                    if last_ts and last_ts > since:
+                        effective_since = last_ts
+                        log.info("ingest_incremental", tag=tag, since=str(effective_since))
+                    else:
+                        log.info("ingest_full", tag=tag, since=str(effective_since))
+
                 async for raw_q in self._client.iter_questions(
-                    tag=tag, since=since, team=team
+                    tag=tag, since=effective_since, until=until, team=team
                 ):
                     try:
                         q_data = _map_question(raw_q, team_slug=team)

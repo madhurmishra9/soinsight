@@ -21,7 +21,7 @@ from app.taxonomy import TAXONOMY, is_valid
 
 log = structlog.get_logger("soinsight.classifier")
 
-_LLM_MODEL = "llama3.1:8b"
+_LLM_MODEL = settings.ollama_model
 _BATCH_SIZE = 20
 _RETRY_ATTEMPTS = 4
 _RETRY_WAIT_MIN = 1   # monkeypatch to 0 in tests
@@ -312,7 +312,7 @@ class ClassifierService:
                     r = await http.post(
                         f"{self._ollama_url}/api/generate",
                         json={
-                            "model": _LLM_MODEL,
+                            "model": settings.ollama_model,
                             "prompt": prompt,
                             "format": "json",
                             "stream": False,
@@ -499,7 +499,7 @@ class ClassifierService:
                         sub_category=res.sub_category,
                         confidence=res.confidence,
                         is_noise=res.is_noise,
-                        model=_LLM_MODEL,
+                        model=settings.ollama_model,
                     )
                 )
             session.commit()

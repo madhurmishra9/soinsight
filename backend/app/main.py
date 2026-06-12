@@ -1,9 +1,13 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from app.db import create_db_tables
 from app.db import engine as app_engine
@@ -49,7 +53,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await scheduler.stop()
 
 
-app = FastAPI(title="SOInsight", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="SOInsight",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url=None,
+)
+
+# CORS — local UI origins only (dev server + single-process mode)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type"],
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):  # type: ignore[no-untyped-def]
+    response: Response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 app.include_router(settings_router)
 app.include_router(questions_router)
 app.include_router(analysis_router)
@@ -71,3 +105,21 @@ async def health_deps() -> dict[str, Any]:
             "url": settings.ollama_url,
         },
     }
+
+
+# ── Single-process mode: serve the built UI from frontend/dist ────────────────
+# When the frontend has been built (npm run build), the backend serves it
+# directly — start one process, open http://localhost:8000, done.
+_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+if _DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str) -> FileResponse:
+        candidate = _DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_DIST / "index.html")
+
+    log.info("ui_serving", path=str(_DIST))

@@ -43,9 +43,12 @@ def test_post_settings_accepts_frontend_payload_shape(client: TestClient) -> Non
         },
     )
     assert r.status_code == 200
-    assert r.json() == {"base_url": "https://demo.stackenterprise.co/api/v3", "team": "my-team"}
+    data = r.json()
+    assert data["base_url"] == "https://demo.stackenterprise.co/api/v3"
+    assert data["team"] == "my-team"
+    assert data["ollama_url"] == "http://localhost:11434"
     # api_key never echoed back
-    assert "api_key" not in r.json()
+    assert "api_key" not in data
     assert "secret-key" not in r.text
 
 

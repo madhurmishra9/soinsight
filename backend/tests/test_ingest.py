@@ -28,16 +28,16 @@ from services.ingestion import (
 # ─── Shared test fixture ──────────────────────────────────────────────────────
 
 RAW_QUESTION: dict[str, Any] = {
-    "question_id": 42,
+    "id": 42,
     "title": "How to configure X?",
     "body": "<p>I need help with X.</p>",
-    "tags": ["python", "api"],
+    "tags": [{"name": "python"}, {"name": "api"}],
     "score": 7,
-    "view_count": 250,
-    "creation_date": 1609459200,  # 2021-01-01 00:00:00 UTC
-    "owner": {"user_id": 99, "user_type": "registered"},
-    "answer_count": 3,
-    "is_answered": True,
+    "viewCount": 250,
+    "creationDate": "2021-01-01T00:00:00Z",
+    "owner": {"id": 99, "role": "registered"},
+    "answerCount": 3,
+    "isAnswered": True,
 }
 
 
@@ -48,7 +48,11 @@ class MockSOClient:
         self._questions = questions
 
     async def iter_questions(
-        self, tag: str, since: datetime, team: str | None = None
+        self,
+        tag: str,
+        since: datetime,
+        until: datetime | None = None,
+        team: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         for q in self._questions:
             yield q
@@ -89,13 +93,18 @@ def test_map_question_author_fields() -> None:
     assert result["author_role"] == "registered"
 
 
-def test_map_question_created_at_from_unix_timestamp() -> None:
+def test_map_question_created_at_from_iso_string() -> None:
     result = _map_question(RAW_QUESTION)
     assert result["created_at"] == datetime(2021, 1, 1, 0, 0, 0)
 
 
+def test_map_question_created_at_from_unix_timestamp() -> None:
+    result = _map_question({**RAW_QUESTION, "creationDate": 1609459200})
+    assert result["created_at"] == datetime(2021, 1, 1, 0, 0, 0)
+
+
 def test_map_question_defaults_for_missing_optional_fields() -> None:
-    minimal: dict[str, Any] = {"question_id": 1, "creation_date": 1609459200}
+    minimal: dict[str, Any] = {"id": 1, "creationDate": 1609459200}
     result = _map_question(minimal)
     assert result["so_id"] == 1
     assert result["title"] == ""
@@ -216,7 +225,7 @@ async def test_ingest_maps_fields_to_db_row() -> None:
 
 @pytest.mark.asyncio
 async def test_ingest_multiple_questions() -> None:
-    raw2: dict[str, Any] = {**RAW_QUESTION, "question_id": 43, "title": "Another Q"}
+    raw2: dict[str, Any] = {**RAW_QUESTION, "id": 43, "title": "Another Q"}
     engine = _make_engine()
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     service = IngestService(

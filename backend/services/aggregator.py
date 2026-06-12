@@ -18,6 +18,7 @@ import structlog
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from app.dates import resolve_range
 from app.models import Classification, Pattern, Question, Run
 from app.taxonomy import RECOMMENDATION_MATRIX
 
@@ -114,12 +115,14 @@ class AggregatorService:
         window_days: int,
         engine: Engine,
         queue: asyncio.Queue[dict[str, Any] | None] | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
     ) -> list[AggregationResult]:
         """
         Aggregate for each product/tag in the window. Persists patterns and run record.
         Pushes SSE-style dicts to queue; None sentinel signals stream completion.
         """
-        since = datetime.utcnow() - timedelta(days=window_days)
+        since, until = resolve_range(window_days, from_date, to_date)
         results: list[AggregationResult] = []
 
         with Session(engine) as session:
@@ -138,7 +141,7 @@ class AggregatorService:
                     await queue.put({"type": "tag_start", "tag": tag})
                 log.info("aggregation_tag_start", tag=tag, window_days=window_days)
 
-                result = self._aggregate_tag(session, tag, since, window_days)
+                result = self._aggregate_tag(session, tag, since, until, window_days)
                 results.append(result)
                 self._persist_patterns(session, result)
                 session.commit()
@@ -189,10 +192,13 @@ class AggregatorService:
         session: Session,
         tag: str,
         since: datetime,
+        until: datetime,
         window_days: int,
     ) -> AggregationResult:
         all_qs = session.exec(
-            select(Question).where(Question.created_at >= since)
+            select(Question).where(
+                Question.created_at >= since, Question.created_at <= until
+            )
         ).all()
         questions = [q for q in all_qs if _question_has_tag(q, tag)]
         q_by_id: dict[int, Question] = {q.id: q for q in questions if q.id is not None}

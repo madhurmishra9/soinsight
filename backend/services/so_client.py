@@ -30,7 +30,8 @@ log = structlog.get_logger("soinsight.so_client")
 # ---------------------------------------------------------------------------
 _PAGE_PARAM = "page"          # guessed — verify in Swagger
 _PAGE_SIZE_PARAM = "pageSize"  # guessed — verify in Swagger
-_DATE_FROM_PARAM = "fromdate"  # guessed — verify in Swagger
+_DATE_FROM_PARAM = "fromdate"
+_DATE_TO_PARAM = "todate"
 # ---------------------------------------------------------------------------
 
 _PAGE_SIZE = 100
@@ -66,8 +67,10 @@ class SOAuth:
 
     def headers(self) -> dict[str, str]:
         h: dict[str, str] = {"User-Agent": "soinsight/1.0"}
-        if self.mode in ("bearer", "key+token") and self._access_token:
-            h["Authorization"] = f"Bearer {self._access_token}"
+        if self.mode in ("bearer", "key+token"):
+            token = self._access_token or self._api_key
+            if token:
+                h["Authorization"] = f"Bearer {token}"
         if self.mode in ("api_key", "key+token") and self._api_key:
             h["X-API-Key"] = self._api_key
         return h
@@ -172,7 +175,7 @@ class SOClient:
         except Exception:
             # Fallback: any successful paginated call proves connectivity.
             try:
-                await self._get("/tags", {_PAGE_SIZE_PARAM: 1, _PAGE_PARAM: 1})
+                await self._get("/tags", {_PAGE_SIZE_PARAM: 15, _PAGE_PARAM: 1})
                 version = "unknown"
             except Exception as exc:
                 log.warning("so_connection_failed", error=str(exc))
@@ -213,6 +216,7 @@ class SOClient:
         self,
         tag: str,
         since: datetime,
+        until: datetime | None = None,
         team: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """
@@ -224,9 +228,10 @@ class SOClient:
         """
         params: dict[str, Any] = {
             "tags": tag,
-            # TODO: verify _DATE_FROM_PARAM in Swagger; may be "since" or "min_date".
             _DATE_FROM_PARAM: int(since.timestamp()),
         }
+        if until is not None:
+            params[_DATE_TO_PARAM] = int(until.timestamp())
 
         # TODO: confirm team-scoping approach. Options:
         #   (a) query param: params["team"] = team
@@ -235,9 +240,26 @@ class SOClient:
         path = f"/teams/{team}/questions" if team else "/questions"
 
         async for page in self._paginate(path, params):
+            exhausted = False
             for item in page:
-                if isinstance(item, dict):
-                    yield item
+                if not isinstance(item, dict):
+                    continue
+                raw_date = item.get("creationDate") or item.get("creation_date")
+                if raw_date:
+                    try:
+                        q_dt = datetime.fromisoformat(
+                            str(raw_date).replace("Z", "+00:00")
+                        ).replace(tzinfo=None)
+                        if q_dt < since:
+                            exhausted = True
+                            break
+                        if until is not None and q_dt > until:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                yield item
+            if exhausted:
+                return
 
     async def list_tags(self, team: str | None = None) -> AsyncIterator[dict[str, Any]]:
         """
