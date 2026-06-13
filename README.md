@@ -14,6 +14,8 @@ Internal **Stack Overflow Enterprise** intelligence platform. SOInsight ingests 
 
 | Document | Contents |
 |---|---|
+| [docs/WHY_SOINSIGHT.md](docs/WHY_SOINSIGHT.md) | What SOInsight is and why you need it: the problem it solves, what it provides, how it compares to native Stack Overflow Enterprise analytics, other benefits, and honest limitations |
+| [docs/BENEFITS.md](docs/BENEFITS.md) | Why SOInsight is automated: the one-command launcher, scheduled auto-fetch, the incremental/idempotent pipeline, local-first posture, and who benefits |
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | First-time setup, daily use, the four pages, time selection, drill-downs, exports, model selection, performance expectations, troubleshooting |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component diagram, data flow (ingestion → classification → aggregation → insights), date handling, key tables, taxonomy |
 | [docs/SECURITY.md](docs/SECURITY.md) | Data handling, secrets, network posture, auth model, dependency hygiene, known limitations |
