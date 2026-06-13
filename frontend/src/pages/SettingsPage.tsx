@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Eye, EyeOff, CheckCircle, XCircle, Loader } from 'lucide-react'
-import { saveSettings, testConnection } from '../api'
+import { saveSettings, testConnection, getSettings, getOllamaModels } from '../api'
 import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
 import type { ConnectionTestResult } from '../types/api'
@@ -14,6 +14,20 @@ export function SettingsPage() {
   const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
+  const [models, setModels] = useState<string[]>([])
+
+  useEffect(() => {
+    getOllamaModels().then((r) => setModels(r.data.models)).catch(() => {})
+    getSettings()
+      .then((r) => setForm((f) => ({
+        ...f,
+        base_url: r.data.base_url,
+        team: r.data.team ?? '',
+        ollama_url: r.data.ollama_url || f.ollama_url,
+        ollama_model: r.data.ollama_model || f.ollama_model || '',
+      })))
+      .catch(() => {})
+  }, [])
 
   const field = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [key]: e.target.value }))
@@ -110,6 +124,28 @@ export function SettingsPage() {
               value={form.ollama_url}
               onChange={field('ollama_url')}
             />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Classification model <span className="hint">(installed Ollama models)</span></label>
+            {models.length > 0 ? (
+              <select
+                className="input"
+                value={form.ollama_model || ''}
+                onChange={(e) => setForm((f) => ({ ...f, ollama_model: e.target.value }))}
+              >
+                <option value="">— keep current —</option>
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="input"
+                placeholder="e.g. llama3.1:8b"
+                value={form.ollama_model || ''}
+                onChange={(e) => setForm((f) => ({ ...f, ollama_model: e.target.value }))}
+              />
+            )}
           </div>
         </div>
 

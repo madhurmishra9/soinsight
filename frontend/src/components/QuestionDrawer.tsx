@@ -3,16 +3,19 @@ import { X } from 'lucide-react'
 import { getQuestions } from '../api'
 import type { QuestionRef } from '../types/api'
 
-export type Drill = { main: string; sub?: string; label: string }
+export type Drill = { main: string; sub?: string; label: string; noise?: boolean }
 
 interface QuestionDrawerProps {
   target: Drill | null
   product: string
   windowDays: number
   onClose: () => void
+  fromDate?: string
+  toDate?: string
+  noise?: boolean
 }
 
-export function QuestionDrawer({ target, product, windowDays, onClose }: QuestionDrawerProps) {
+export function QuestionDrawer({ target, product, windowDays, onClose, fromDate, toDate, noise }: QuestionDrawerProps) {
   const [items, setItems] = useState<QuestionRef[] | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -20,11 +23,11 @@ export function QuestionDrawer({ target, product, windowDays, onClose }: Questio
     if (!target) return
     setLoading(true)
     setItems(null)
-    getQuestions(product, windowDays, target.main, target.sub)
+    getQuestions(product, windowDays, target.main, target.sub, fromDate, toDate, noise || target.noise)
       .then((r) => setItems(r.data))
       .catch(() => setItems([]))
       .finally(() => setLoading(false))
-  }, [target, product, windowDays])
+  }, [target, product, windowDays, fromDate, toDate, noise])
 
   if (!target) return null
 
@@ -32,7 +35,7 @@ export function QuestionDrawer({ target, product, windowDays, onClose }: Questio
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
-          <span>{target.main}{target.sub ? ` / ${target.sub}` : ''}</span>
+          <span>{target.label || (target.noise ? 'Noise / Excluded Questions' : `${target.main}${target.sub ? ` / ${target.sub}` : ''}`)}</span>
           <button className="btn btn-sm btn-secondary" onClick={onClose}>
             <X size={14} />
           </button>

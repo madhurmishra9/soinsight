@@ -39,8 +39,15 @@ function eventToEntry(ev: SseEvent): LogEntry {
 export function FetchPage() {
   const { knownProducts, addProducts } = useApp()
   const [tags, setTags] = useState<string[]>(knownProducts.length ? knownProducts : [])
+
+  useEffect(() => {
+    setTags((prev) => (prev.length === 0 && knownProducts.length > 0 ? knownProducts : prev))
+  }, [knownProducts])
   const [tagInput, setTagInput] = useState('')
   const [windowDays, setWindowDays] = useState(30)
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [incremental, setIncremental] = useState(true)
   const [running, setRunning] = useState(false)
   const [log, setLog] = useState<LogEntry[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -72,10 +79,15 @@ export function FetchPage() {
     if (!tags.length) return
     setRunning(true)
     setError(null)
-    setLog([{ ts: now(), msg: `Starting fetch for [${tags.join(', ')}] over ${windowDays}d window…`, kind: 'info' }])
+    const rangeLabel = fromDate && toDate
+      ? `${fromDate} → ${toDate}`
+      : fromDate
+      ? `${fromDate} → now`
+      : `last ${windowDays}d`
+    setLog([{ ts: now(), msg: `Starting fetch for [${tags.join(', ')}] over ${rangeLabel}…`, kind: 'info' }])
 
     try {
-      const res = await fetchQuestions({ products: tags, window_days: windowDays })
+      const res = await fetchQuestions({ products: tags, window_days: windowDays, from_date: fromDate || undefined, to_date: toDate || undefined, incremental })
       const { run_id } = res.data
       addProducts(tags)
 
@@ -141,14 +153,39 @@ export function FetchPage() {
             {WINDOWS.map((w) => (
               <button
                 key={w}
-                className={`window-tab${windowDays === w ? ' active' : ''}`}
-                onClick={() => setWindowDays(w)}
+                className={`window-tab${windowDays === w && !fromDate && !toDate ? ' active' : ''}`}
+                onClick={() => { setWindowDays(w); setFromDate(''); setToDate('') }}
                 disabled={running}
               >
                 {w}d
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="form-group">
+          <label>Custom date range <span className="hint">overrides the window when set</span></label>
+          <div className="flex items-center gap-12" style={{ flexWrap: 'wrap' }}>
+            <input className="input" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} disabled={running} />
+            <input className="input" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} disabled={running} />
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={incremental}
+              onChange={(e) => setIncremental(e.target.checked)}
+              disabled={running}
+            />
+            <span>Incremental fetch <span className="hint">(only questions newer than last fetch per tag — much faster)</span></span>
+          </label>
+          {!incremental && (
+            <div className="alert alert-info" style={{ marginTop: 6 }}>
+              Full fetch: will re-download all questions in the selected date range.
+            </div>
+          )}
         </div>
 
         {error && <div className="alert alert-error">{error}</div>}

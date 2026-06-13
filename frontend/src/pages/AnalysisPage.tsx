@@ -30,6 +30,8 @@ export function AnalysisPage() {
   const [tags, setTags] = useState<string[]>(knownProducts)
   const [tagInput, setTagInput] = useState('')
   const [windowDays, setWindowDays] = useState(30)
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
   const [running, setRunning] = useState(false)
   const [log, setLog] = useState<LogEntry[]>([])
   const [tagSummaries, setTagSummaries] = useState<TagSummary[]>([])
@@ -82,10 +84,11 @@ export function AnalysisPage() {
     setRunning(true)
     setError(null)
     setTagSummaries([])
-    setLog([{ ts: now(), msg: `Starting analysis for [${tags.join(', ')}] over ${windowDays}d window…`, kind: 'info' }])
+    const rangeLabel = fromDate && toDate ? `${fromDate} → ${toDate}` : fromDate ? `${fromDate} → now` : `last ${windowDays}d`
+    setLog([{ ts: now(), msg: `Starting analysis for [${tags.join(', ')}] over ${rangeLabel}…`, kind: 'info' }])
 
     try {
-      const res = await startAnalysis({ products: tags, window_days: windowDays })
+      const res = await startAnalysis({ products: tags, window_days: windowDays, from_date: fromDate || undefined, to_date: toDate || undefined })
       addProducts(tags)
       setLog((l) => [...l, { ts: now(), msg: `Run ${res.data.run_id} started…`, kind: 'info' }])
 
@@ -159,14 +162,39 @@ export function AnalysisPage() {
             {WINDOWS.map((w) => (
               <button
                 key={w}
-                className={`window-tab${windowDays === w ? ' active' : ''}`}
-                onClick={() => setWindowDays(w)}
+                className={`window-tab${windowDays === w && !fromDate && !toDate ? ' active' : ''}`}
+                onClick={() => { setWindowDays(w); setFromDate(''); setToDate('') }}
                 disabled={running}
               >
                 {w}d
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="form-group">
+          <label>Custom date range <span className="hint">overrides the window when set</span></label>
+          <div className="flex items-center gap-12" style={{ flexWrap: 'wrap' }}>
+            <input
+              className="input"
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              disabled={running}
+            />
+            <input
+              className="input"
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              disabled={running}
+            />
+          </div>
+        </div>
+
+        <div className="alert alert-info" style={{ fontSize: 13 }}>
+          Analysis is always incremental — only questions not yet classified are sent to the model.
+          Previously classified questions load instantly from the database.
         </div>
 
         {error && <div className="alert alert-error">{error}</div>}

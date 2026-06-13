@@ -46,7 +46,7 @@
 }
 
 /* ── Layout ── */
-.layout { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 100vh; }
+.layout { min-height: 100vh; }
 
 .sidebar {
   background: var(--sidebar-bg);

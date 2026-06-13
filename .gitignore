@@ -48,3 +48,9 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# secrets & local artifacts
+backend/.env
+backend/data/
+frontend/dist/
+.venv/

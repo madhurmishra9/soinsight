@@ -1,6 +1,7 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useState, useEffect } from 'react'
 import type { ReactNode } from 'react'
 import type { SettingsPayload } from '../types/api'
+import { getSettings } from '../api'
 
 interface AppState {
   settings: SettingsPayload
@@ -15,7 +16,7 @@ interface AppContextType extends AppState {
 }
 
 const defaults: AppState = {
-  settings: { base_url: '', api_key: '', team: '', ollama_url: 'http://localhost:11434' },
+  settings: { base_url: '', api_key: '', team: '', ollama_url: 'http://localhost:11434', ollama_model: '' },
   scopes: [],
   knownProducts: [],
 }
@@ -38,6 +39,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return Array.from(s)
     })
   }
+
+  useEffect(() => {
+    getSettings()
+      .then((r) => {
+        const d = r.data
+        if (d.base_url) setSettings((prev) => ({ ...prev, base_url: d.base_url, team: d.team ?? '', ollama_url: d.ollama_url ?? prev.ollama_url }))
+        if (d.default_tags) {
+          const tags = d.default_tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+          setKnownProducts((prev) => Array.from(new Set([...prev, ...tags])))
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   return (
     <AppContext.Provider value={{ settings, scopes, knownProducts, setSettings, setScopes, addProducts }}>

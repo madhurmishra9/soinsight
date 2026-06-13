@@ -32,6 +32,7 @@ export interface InsightsSummary {
   window_days: number
   total_questions: number
   noise_count: number
+  noise_questions?: QuestionRef[]
   category_breakdown: CategoryBreakdownItem[]
   top_issues: CategoryBreakdownItem[]
   patterns: PatternItem[]
@@ -57,16 +58,23 @@ export interface SettingsPayload {
   api_key: string
   team: string
   ollama_url: string
+  ollama_model?: string
+  default_tags?: string
 }
 
 export interface FetchRequest {
   products: string[]
   window_days: number
+  from_date?: string
+  to_date?: string
+  incremental?: boolean
 }
 
 export interface AnalysisRequest {
   products: string[]
   window_days: number
+  from_date?: string
+  to_date?: string
 }
 
 export type SseEvent = {

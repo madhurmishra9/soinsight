@@ -41,9 +41,9 @@ function catColor(name: string, idx: number) {
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
-function StatCard({ value, label, sub }: { value: string | number; label: string; sub?: string }) {
+function StatCard({ value, label, sub, onClick }: { value: string | number; label: string; sub?: string; onClick?: () => void }) {
   return (
-    <div className="card stat">
+    <div className="card stat" onClick={onClick} style={onClick ? { cursor: 'pointer' } : undefined}>
       <div className="stat-value">{value}</div>
       <div className="stat-label">{label}</div>
       {sub && <div className="stat-note">{sub}</div>}
@@ -274,6 +274,8 @@ export function DashboardPage() {
   const { knownProducts } = useApp()
   const [product, setProduct] = useState(knownProducts[0] ?? '')
   const [windowDays, setWindowDays] = useState(30)
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
   const [summary, setSummary] = useState<InsightsSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -284,7 +286,7 @@ export function DashboardPage() {
     setLoading(true)
     setError(null)
     try {
-      const res = await getSummary(product.trim(), windowDays)
+      const res = await getSummary(product.trim(), windowDays, fromDate || undefined, toDate || undefined)
       setSummary(res.data)
     } catch (err) {
       setError(errorMessage(err))
@@ -295,7 +297,7 @@ export function DashboardPage() {
 
   const handleExport = (fmt: 'json' | 'md') => {
     if (!product.trim()) return
-    downloadReport(product.trim(), windowDays, fmt)
+    downloadReport(product.trim(), windowDays, fmt, fromDate || undefined, toDate || undefined)
   }
 
   return (
@@ -349,12 +351,19 @@ export function DashboardPage() {
               {WINDOWS.map((w) => (
                 <button
                   key={w}
-                  className={`window-tab${windowDays === w ? ' active' : ''}`}
-                  onClick={() => setWindowDays(w)}
+                  className={`window-tab${windowDays === w && !fromDate && !toDate ? ' active' : ''}`}
+                  onClick={() => { setWindowDays(w); setFromDate(''); setToDate('') }}
                 >
                   {w}d
                 </button>
               ))}
+            </div>
+          </div>
+          <div>
+            <label style={{ display: 'block', marginBottom: 6 }}>Custom range</label>
+            <div className="flex items-center gap-12" style={{ flexWrap: 'wrap' }}>
+              <input className="input" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+              <input className="input" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
             </div>
           </div>
           <div style={{ paddingTop: 22 }}>
@@ -386,7 +395,7 @@ export function DashboardPage() {
           {/* Stats row */}
           <div className="grid-4" style={{ marginBottom: 16 }}>
             <StatCard value={summary.total_questions} label="Signal questions" />
-            <StatCard value={summary.noise_count} label="Noise volume" />
+            <StatCard value={summary.noise_count} label="Noise volume" onClick={() => setDrill({ main: '__noise__', label: 'Noise / Excluded Questions', noise: true })} />
             <StatCard value={summary.patterns.length} label="Patterns detected" />
             <StatCard
               value={summary.technical_ratio !== null ? `${Math.round(summary.technical_ratio * 100)}%` : '—'}
@@ -452,6 +461,8 @@ export function DashboardPage() {
             target={drill}
             product={product.trim()}
             windowDays={windowDays}
+            fromDate={fromDate || undefined}
+            toDate={toDate || undefined}
             onClose={() => setDrill(null)}
           />
         </>
