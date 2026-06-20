@@ -14,8 +14,11 @@ from app.db import engine as app_engine
 from app.logging import get_logger, setup_logging
 from app.settings import settings
 from routers.analysis import router as analysis_router
+from routers.dismissals import router as dismissals_router
 from routers.insights import router as insights_router
 from routers.questions import router as questions_router
+from routers.remediation import router as remediation_router
+from routers.runs import router as runs_router
 from routers.scheduler import router as scheduler_router
 from routers.scheduler import set_scheduler
 from routers.settings import router as settings_router
@@ -88,6 +91,9 @@ app.include_router(settings_router)
 app.include_router(questions_router)
 app.include_router(analysis_router)
 app.include_router(insights_router)
+app.include_router(dismissals_router)
+app.include_router(remediation_router)
+app.include_router(runs_router)
 app.include_router(scheduler_router)
 
 
@@ -112,14 +118,30 @@ async def health_deps() -> dict[str, Any]:
 # directly — start one process, open http://localhost:8000, done.
 _DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
+
+def _safe_spa_path(dist: Path, dist_resolved: Path, full_path: str) -> Path | None:
+    """Return a real file inside *dist* for *full_path*, or None.
+
+    A None return means "serve index.html" — used both for the SPA root and as
+    the rejection signal when *full_path* tries to escape *dist* (e.g. `..`).
+    """
+    if not full_path:
+        return None
+    candidate = (dist / full_path).resolve()
+    try:
+        candidate.relative_to(dist_resolved)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
 if _DIST.is_dir():
+    _DIST_RESOLVED = _DIST.resolve()
     app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa(full_path: str) -> FileResponse:
-        candidate = _DIST / full_path
-        if full_path and candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(_DIST / "index.html")
+        resolved = _safe_spa_path(_DIST, _DIST_RESOLVED, full_path)
+        return FileResponse(resolved if resolved is not None else _DIST / "index.html")
 
     log.info("ui_serving", path=str(_DIST))

@@ -1,3 +1,56 @@
+export interface EvidenceQuestion {
+  so_id: number
+  title: string
+  url: string | null
+}
+
+export interface EvidenceAnswer {
+  so_id: number
+  question_so_id: number
+  snippet: string
+  is_accepted: boolean
+  score: number
+}
+
+export interface RemediationItem {
+  main_category: string
+  sub_category: string
+  question_count: number
+  distinct_users: number
+  root_cause: string
+  solution: string
+  prevention: string
+  confidence: number
+  grounded: boolean
+  model: string
+  generated_at: string
+  evidence_questions: EvidenceQuestion[]
+  evidence_answers: EvidenceAnswer[]
+}
+
+export interface TagValidation {
+  tag: string
+  status: 'available' | 'unavailable' | 'unknown'
+  question_count: number | null
+}
+
+export interface TagCoverage {
+  tag: string
+  question_count: number
+  answer_count: number
+  earliest_question_at: string | null
+  latest_question_at: string | null
+  last_fetch_at: string | null
+}
+
+export interface AnswerRef {
+  so_id: number
+  body: string
+  score: number
+  is_accepted: boolean
+  created_at: string
+}
+
 export interface QuestionRef {
   so_id: number
   title: string
@@ -5,6 +58,8 @@ export interface QuestionRef {
   view_count: number
   created_at: string
   url: string | null
+  answer_count?: number
+  answers?: AnswerRef[]
 }
 
 export interface CategoryBreakdownItem {
@@ -80,4 +135,58 @@ export interface AnalysisRequest {
 export type SseEvent = {
   type: string
   [key: string]: unknown
+}
+
+// ── F4 Run history ────────────────────────────────────────────────────────────
+
+export interface RunItem {
+  id: number
+  started_at: string
+  finished_at: string | null
+  status: string
+  products: string[]
+  window_days: number
+  duration_seconds: number | null
+  counts: Record<string, number>
+}
+
+// ── F1 Pattern dismissals ─────────────────────────────────────────────────────
+
+export interface DismissedItem {
+  id: number
+  product: string
+  main: string
+  sub: string
+  dismissed_until: string | null
+  reason: string | null
+  created_at: string
+}
+
+export interface DismissRequest {
+  product: string
+  main: string
+  sub: string
+  days?: number
+  until?: string
+  reason?: string
+}
+
+// ── F2 Rising-volume trends ───────────────────────────────────────────────────
+
+export interface TrendItem {
+  main_category: string
+  sub_category: string
+  recent_count: number
+  trailing_avg_per_window: number
+  multiplier: number
+  is_rising: boolean
+}
+
+// ── F3 Tag suggestions ────────────────────────────────────────────────────────
+
+export interface TagSuggestion {
+  tag: string
+  instance_count: number
+  local_count: number
+  coverage_ratio: number
 }

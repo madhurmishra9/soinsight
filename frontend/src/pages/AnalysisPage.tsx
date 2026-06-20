@@ -1,117 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
 import { BarChart2, Loader, X } from 'lucide-react'
-import { startAnalysis, analysisStreamUrl } from '../api'
-import { connectSSE } from '../api/sse'
-import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
-import type { SseEvent } from '../types/api'
+import { useRuns } from '../context/RunsContext'
 
 const WINDOWS = [7, 14, 30, 60, 90]
 
-interface LogEntry {
-  ts: string
-  msg: string
-  kind: 'info' | 'done' | 'error'
-}
-
-interface TagSummary {
-  tag: string
-  patterns: number
-  total: number
-  noise: number
-}
-
-function now() {
-  return new Date().toLocaleTimeString('en-GB', { hour12: false })
-}
-
 export function AnalysisPage() {
-  const { knownProducts, addProducts } = useApp()
-  const [tags, setTags] = useState<string[]>(knownProducts)
+  const { knownProducts } = useApp()
+  const { analysis, patchAnalysis, startAnalysis } = useRuns()
+  const { tags, windowDays, fromDate, toDate, running, log, error, tagSummaries } = analysis
+
   const [tagInput, setTagInput] = useState('')
-  const [windowDays, setWindowDays] = useState(30)
-  const [fromDate, setFromDate] = useState('')
-  const [toDate, setToDate] = useState('')
-  const [running, setRunning] = useState(false)
-  const [log, setLog] = useState<LogEntry[]>([])
-  const [tagSummaries, setTagSummaries] = useState<TagSummary[]>([])
-  const [error, setError] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
-  const cleanupRef = useRef<(() => void) | null>(null)
 
-  // Keep tags in sync when knownProducts grows
+  // Seed tags from previously fetched products the first time, only if empty.
   useEffect(() => {
-    if (knownProducts.length && !tags.length) setTags(knownProducts)
-  }, [knownProducts, tags.length])
+    if (tags.length === 0 && knownProducts.length > 0) patchAnalysis({ tags: knownProducts })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [knownProducts])
 
-  useEffect(() => () => { cleanupRef.current?.() }, [])
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' })
   }, [log])
 
   const addTag = () => {
     const t = tagInput.trim().toLowerCase()
-    if (t && !tags.includes(t)) setTags((prev) => [...prev, t])
+    if (t && !tags.includes(t)) patchAnalysis({ tags: [...tags, t] })
     setTagInput('')
   }
-  const removeTag = (tag: string) => setTags((prev) => prev.filter((t) => t !== tag))
+  const removeTag = (tag: string) => patchAnalysis({ tags: tags.filter((t) => t !== tag) })
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag() }
-    if (e.key === 'Backspace' && !tagInput && tags.length) setTags((prev) => prev.slice(0, -1))
-  }
-
-  const handleEvent = (ev: SseEvent) => {
-    if (ev.type === 'tag_start') {
-      setLog((l) => [...l, { ts: now(), msg: `▶ Processing tag: ${String(ev.tag)}`, kind: 'info' }])
-    } else if (ev.type === 'tag_done') {
-      const tag = String(ev.tag)
-      const patterns = Number(ev.patterns ?? 0)
-      const total = Number(ev.total ?? 0)
-      const noise = Number(ev.noise ?? 0)
-      setTagSummaries((prev) => [...prev, { tag, patterns, total, noise }])
-      setLog((l) => [
-        ...l,
-        { ts: now(), msg: `✓ ${tag}: ${total} signal, ${noise} noise, ${patterns} patterns`, kind: 'info' },
-      ])
-    } else {
-      const detail = Object.entries(ev).filter(([k]) => k !== 'type').map(([k, v]) => `${k}=${String(v)}`).join(' ')
-      setLog((l) => [...l, { ts: now(), msg: `[${ev.type}] ${detail}`, kind: 'info' }])
-    }
-  }
-
-  const handleStart = async () => {
-    if (!tags.length) return
-    setRunning(true)
-    setError(null)
-    setTagSummaries([])
-    const rangeLabel = fromDate && toDate ? `${fromDate} → ${toDate}` : fromDate ? `${fromDate} → now` : `last ${windowDays}d`
-    setLog([{ ts: now(), msg: `Starting analysis for [${tags.join(', ')}] over ${rangeLabel}…`, kind: 'info' }])
-
-    try {
-      const res = await startAnalysis({ products: tags, window_days: windowDays, from_date: fromDate || undefined, to_date: toDate || undefined })
-      addProducts(tags)
-      setLog((l) => [...l, { ts: now(), msg: `Run ${res.data.run_id} started…`, kind: 'info' }])
-
-      cleanupRef.current?.()
-      cleanupRef.current = connectSSE(
-        analysisStreamUrl(res.data.run_id),
-        handleEvent,
-        () => {
-          setLog((l) => [...l, { ts: now(), msg: '✓ Analysis complete.', kind: 'done' }])
-          setRunning(false)
-        },
-        (msg) => {
-          setLog((l) => [...l, { ts: now(), msg: `Error: ${msg}`, kind: 'error' }])
-          setError(msg)
-          setRunning(false)
-        },
-      )
-    } catch (err) {
-      const msg = errorMessage(err)
-      setError(msg)
-      setLog((l) => [...l, { ts: now(), msg: `Error: ${msg}`, kind: 'error' }])
-      setRunning(false)
-    }
+    if (e.key === 'Backspace' && !tagInput && tags.length) patchAnalysis({ tags: tags.slice(0, -1) })
   }
 
   return (
@@ -148,7 +68,7 @@ export function AnalysisPage() {
             <div className="text-sm text-muted mt-4">
               From previous fetch:{' '}
               {knownProducts.map((p) => (
-                <button key={p} className="btn btn-ghost btn-sm" onClick={() => setTags((prev) => [...new Set([...prev, p])])}>
+                <button key={p} className="btn btn-ghost btn-sm" onClick={() => patchAnalysis({ tags: [...new Set([...tags, p])] })}>
                   + {p}
                 </button>
               ))}
@@ -163,7 +83,7 @@ export function AnalysisPage() {
               <button
                 key={w}
                 className={`window-tab${windowDays === w && !fromDate && !toDate ? ' active' : ''}`}
-                onClick={() => { setWindowDays(w); setFromDate(''); setToDate('') }}
+                onClick={() => patchAnalysis({ windowDays: w, fromDate: '', toDate: '' })}
                 disabled={running}
               >
                 {w}d
@@ -179,14 +99,14 @@ export function AnalysisPage() {
               className="input"
               type="date"
               value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
+              onChange={(e) => patchAnalysis({ fromDate: e.target.value })}
               disabled={running}
             />
             <input
               className="input"
               type="date"
               value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
+              onChange={(e) => patchAnalysis({ toDate: e.target.value })}
               disabled={running}
             />
           </div>
@@ -201,12 +121,17 @@ export function AnalysisPage() {
 
         <button
           className="btn btn-primary"
-          onClick={handleStart}
+          onClick={() => { addTag(); void startAnalysis() }}
           disabled={running || !tags.length}
         >
           {running ? <Loader size={14} className="spin" /> : <BarChart2 size={14} />}
           {running ? 'Analysing…' : 'Start analysis'}
         </button>
+        {running && (
+          <div className="hint" style={{ marginTop: 8 }}>
+            This run keeps going if you switch tabs — come back any time to see progress.
+          </div>
+        )}
       </div>
 
       {tagSummaries.length > 0 && (

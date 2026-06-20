@@ -30,6 +30,21 @@ deployment.
 - Outbound TLS uses certifi; a broken corporate `SSL_CERT_FILE` is
   self-healed at startup rather than disabling verification.
 
+## Static serving (prod-mode SPA)
+The SPA catch-all in `app/main.py` resolves every requested path under
+`frontend/dist` and verifies the resolved location stays inside that
+directory. Requests like `GET /../backend/.env` (or URL-encoded variants
+of `..`) are refused and fall back to `index.html`. The check is
+covered by `tests/test_main.py` so any future refactor that re-opens
+the traversal hole fails CI.
+
+## Long-running stream hygiene
+SSE streams (`/api/questions/stream`, `/api/remediation/stream`) wrap
+their event-generator in a `try / finally` that removes the run's queue
+from the in-process registry. This prevents unbounded `_run_queues`
+growth across long uptimes and disconnects (tested in
+`tests/test_run_queue_cleanup.py`).
+
 ## Auth to Stack Overflow Enterprise
 - Bearer-token only (`Authorization: Bearer <token>`); read-only API usage
   (questions/tags). The tool never writes to SO, Confluence, Backstage, or

@@ -44,10 +44,60 @@ Click any of these to see the underlying questions with links:
 
 ### Exports
 
-Top-right of the Dashboard: **JSON** and **Markdown**. Reports include every
-question (with links) under Top Issues, Key Patterns, an "All Questions by
-Category" appendix, and a "Noise / Excluded Questions" section. Filenames
-reflect the actual range used (e.g. `report_cloudsql_2026-01-01_to_2026-06-11.md`).
+Top-right of the Dashboard: **JSON**, **Markdown**, and **PDF**. All three
+formats include every question (with links) under Top Issues, Key Patterns, an
+"All Questions by Category" appendix, and a "Noise / Excluded Questions" section.
+The PDF is produced with reportlab Platypus — long tables and remediation prose
+paginate cleanly across pages, table headers reprint on every page, and section
+titles stay attached to their first row. Filenames reflect the actual range used
+(e.g. `report_cloudsql_2026-01-01_to_2026-06-11.pdf`).
+
+### Snoozing a recurring pattern
+
+Once a recurring `(product, main, sub)` cluster has been acknowledged or shipped
+a fix, snooze it so it stops surfacing in Top Issues and the patterns list:
+
+```bash
+# Snooze for 30 days
+curl -X POST http://localhost:8000/api/patterns/dismiss \
+  -H "Content-Type: application/json" \
+  -d '{"product":"cloudsql","main":"Technical","sub":"Reliability","days":30,"reason":"fix shipping in v1.4"}'
+
+# List active snoozes for a product
+curl 'http://localhost:8000/api/patterns/dismiss?product=cloudsql'
+
+# Cancel
+curl -X DELETE 'http://localhost:8000/api/patterns/dismiss?product=cloudsql&main=Technical&sub=Reliability'
+
+# Show snoozed items in the next /summary call
+curl 'http://localhost:8000/api/insights/summary?product=cloudsql&window=30&include_dismissed=true'
+```
+
+Snoozes are keyed by `(product, main, sub)`, so they survive window changes and
+re-aggregation. Expired snoozes automatically stop hiding.
+
+### Rising-volume detector
+
+`GET /api/insights/trends?product=<tag>` compares a recent window (default 7d)
+against a trailing baseline (default 30d) per category and flags categories
+whose recent volume is ≥ 2× the trailing average. Tunable via `recent_days`,
+`baseline_days`, `threshold`, and `min_recent` (noise floor — default 2).
+
+### Tag auto-discovery
+
+`GET /api/insights/tag-suggestions?tracked=<csv>` surfaces tags from your SO
+instance that you aren't already tracking, ranked by instance-wide volume, with
+a `coverage_ratio` showing how much of that tag's traffic you already have
+locally. Reads the tag index cached by `/api/questions/validate-tags`, so the
+first call after startup may be empty — type a tag in the Fetch page first to
+prime the cache.
+
+### Run history
+
+`GET /api/runs` returns past ingest/aggregate runs newest-first, with
+parsed products, JSON counts, status, and computed duration. Useful for
+auditing the scheduled refresh or debugging a slow tag. Filter with
+`?status=done|partial|failed|running` and paginate with `limit` / `offset`.
 
 ### Choosing a model
 

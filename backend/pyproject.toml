@@ -17,6 +17,7 @@ dependencies = [
     "chromadb>=0.5",
     "ollama>=0.2",
     "structlog>=24.1",
+    "reportlab>=4.1",
 ]
 
 [project.optional-dependencies]

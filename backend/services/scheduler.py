@@ -25,6 +25,7 @@ import structlog
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from app.dates import utcnow
 from app.models import Classification, Question, ScheduleConfig
 from app.settings import settings
 from services.aggregator import AggregatorService
@@ -94,7 +95,7 @@ class SchedulerService:
                     await asyncio.sleep(_POLL_INTERVAL)
                     continue
 
-                now = datetime.utcnow()
+                now = utcnow()
                 if config.next_run_at is None or now >= config.next_run_at:
                     await self._execute_run(config)
                 else:
@@ -135,7 +136,7 @@ class SchedulerService:
         log.info("scheduled_run_start", products=products, window_days=config.window_days)
 
         # Stamp timestamps before the run so next_run_at is set even on partial failure.
-        now = datetime.utcnow()
+        now = utcnow()
         with Session(self._engine) as session:
             cfg = session.get(ScheduleConfig, config.id)
             if cfg is not None:

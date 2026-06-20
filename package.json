@@ -1,0 +1,11 @@
+{
+  "name": "soinsight",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Run the SOInsight backend and frontend together with one command.",
+  "scripts": {
+    "setup": "python run.py --setup",
+    "dev": "python run.py",
+    "start": "python run.py --prod"
+  }
+}

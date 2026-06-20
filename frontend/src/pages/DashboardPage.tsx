@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -10,15 +10,16 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { FileJson, FileText, Loader, RefreshCw, Users } from 'lucide-react'
-import { getSummary, downloadReport } from '../api'
+import { Check, FileDown, FileJson, FileText, Loader, RefreshCw, ShieldCheck, Sparkles, Users } from 'lucide-react'
+import { getSummary, downloadReport, getRemediations } from '../api'
 import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
+import { useRuns } from '../context/RunsContext'
 import { CardSkeleton, StatsSkeleton } from '../components/Skeleton'
 import { QuestionDrawer } from '../components/QuestionDrawer'
 import type { Drill } from '../components/QuestionDrawer'
 import { cssVar, useThemeTick } from '../hooks/useTheme'
-import type { InsightsSummary, CategoryBreakdownItem, PatternItem } from '../types/api'
+import type { InsightsSummary, CategoryBreakdownItem, PatternItem, RemediationItem } from '../types/api'
 
 const WINDOWS = [7, 14, 30, 60, 90]
 
@@ -267,11 +268,170 @@ function TechnicalSplit({ techRatio, nonTechRatio }: { techRatio: number | null;
   )
 }
 
+// ── Remediation guide ─────────────────────────────────────────────────────────
+
+function RemediationCard({ item }: { item: RemediationItem }) {
+  const confidence = Math.round(item.confidence * 100)
+  return (
+    <div className="pattern-card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="pattern-header">
+        <span className="pattern-title">{item.main_category}: {item.sub_category}</span>
+        <div className="flex gap-8" style={{ flexWrap: 'wrap' }}>
+          <span className="badge badge-blue">{item.question_count} questions</span>
+          <span className="badge badge-gray"><Users size={10} /> {item.distinct_users} users</span>
+          {item.grounded ? (
+            <span className="badge badge-green" title="Every claim is tied to cited source questions/answers">
+              <ShieldCheck size={10} /> grounded · {confidence}%
+            </span>
+          ) : (
+            <span className="badge badge-gray" title="Could not be tied back to real sources">
+              not grounded
+            </span>
+          )}
+        </div>
+      </div>
+
+      {!item.grounded ? (
+        <div className="alert alert-info" style={{ marginBottom: 0 }}>{item.prevention}</div>
+      ) : (
+        <>
+          {item.root_cause && (
+            <div>
+              <div className="card-subtitle" style={{ marginBottom: 2 }}>Root cause</div>
+              <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{item.root_cause}</div>
+            </div>
+          )}
+          {item.solution && (
+            <div>
+              <div className="card-subtitle" style={{ marginBottom: 2 }}>Solution</div>
+              <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{item.solution}</div>
+            </div>
+          )}
+          {item.prevention && (
+            <div>
+              <div className="card-subtitle" style={{ marginBottom: 2 }}>Prevent recurrence</div>
+              <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{item.prevention}</div>
+            </div>
+          )}
+
+          {(item.evidence_questions.length > 0 || item.evidence_answers.length > 0) && (
+            <details>
+              <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-muted)' }}>
+                Grounded in {item.evidence_questions.length} question{item.evidence_questions.length === 1 ? '' : 's'}
+                {item.evidence_answers.length > 0 ? ` · ${item.evidence_answers.length} answer${item.evidence_answers.length === 1 ? '' : 's'}` : ''}
+              </summary>
+              <div style={{ marginTop: 6, fontSize: 13 }}>
+                {item.evidence_questions.length > 0 && (
+                  <ul style={{ margin: '0 0 6px', paddingLeft: 18 }}>
+                    {item.evidence_questions.map((q) => (
+                      <li key={q.so_id}>
+                        {q.url ? <a href={q.url} target="_blank" rel="noreferrer">{q.title}</a> : q.title}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.evidence_answers.map((a) => (
+                  <div key={a.so_id} style={{ borderLeft: '2px solid var(--border)', paddingLeft: 10, marginBottom: 6 }}>
+                    <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                      {a.is_accepted && <Check size={10} />} answer to #{a.question_so_id} · score {a.score}
+                    </span>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{a.snippet}</div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function RemediationGuide({
+  items, loading, running, log, hasSummary, onGenerate,
+}: {
+  items: RemediationItem[]
+  loading: boolean
+  running: boolean
+  log: { ts: string; msg: string; kind: string }[]
+  hasSummary: boolean
+  onGenerate: (regenerate: boolean) => void
+}) {
+  const grounded = items.filter((i) => i.grounded)
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          <div className="card-title" style={{ marginBottom: 2 }}>
+            <Sparkles size={15} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+            Remediation guide
+          </div>
+          <div className="card-subtitle" style={{ marginBottom: 0 }}>
+            Grounded, detailed fixes per cluster of similar questions — derived strictly from the captured questions and answers, so the same questions stop recurring.
+          </div>
+        </div>
+        <div className="btn-group">
+          <button className="btn btn-primary btn-sm" onClick={() => onGenerate(false)} disabled={running || !hasSummary}>
+            {running ? <Loader size={14} className="spin" /> : <Sparkles size={14} />}
+            {running ? 'Analysing…' : items.length ? 'Update guide' : 'Generate guide'}
+          </button>
+          {items.length > 0 && (
+            <button className="btn btn-secondary btn-sm" onClick={() => onGenerate(true)} disabled={running}>
+              <RefreshCw size={14} /> Regenerate all
+            </button>
+          )}
+        </div>
+      </div>
+
+      {running && (
+        <>
+          <div className="hint" style={{ marginTop: 10 }}>
+            This keeps running if you switch tabs — come back any time.
+          </div>
+          {log.length > 0 && (
+            <div className="progress-log" style={{ marginTop: 8, maxHeight: 160 }}>
+              {log.slice(-40).map((e, i) => (
+                <div key={i} className={`progress-event ev-${e.kind}`}>
+                  <span className="ts">{e.ts}</span>
+                  <span className="msg">{e.msg}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {!running && loading && <div className="text-muted text-sm" style={{ marginTop: 10 }}>Loading…</div>}
+
+      {!running && !loading && items.length === 0 && (
+        <div className="alert alert-info" style={{ marginTop: 12, marginBottom: 0 }}>
+          No remediation guide yet for this product/window. Click <strong>Generate guide</strong> to have the model
+          analyse the captured questions and their answers and produce grounded fixes. Patterns with ≥3 questions
+          from ≥2 users are remediated.
+        </div>
+      )}
+
+      {!running && items.length > 0 && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {grounded.length === 0 && (
+            <div className="alert alert-info" style={{ marginBottom: 0 }}>
+              The model could not produce a grounded fix from the captured sources. Try fetching answers
+              (enable <code>FETCH_ANSWERS</code>) or widen the window, then regenerate.
+            </div>
+          )}
+          {items.map((item, i) => <RemediationCard key={i} item={item} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
   useThemeTick()
   const { knownProducts } = useApp()
+  const { remediation, startRemediation } = useRuns()
   const [product, setProduct] = useState(knownProducts[0] ?? '')
   const [windowDays, setWindowDays] = useState(30)
   const [fromDate, setFromDate] = useState('')
@@ -280,6 +440,21 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [drill, setDrill] = useState<Drill | null>(null)
+  const [remediations, setRemediations] = useState<RemediationItem[]>([])
+  const [remLoading, setRemLoading] = useState(false)
+
+  const loadRemediations = async (prod: string, win: number) => {
+    if (!prod.trim()) return
+    setRemLoading(true)
+    try {
+      const res = await getRemediations(prod.trim(), win)
+      setRemediations(res.data)
+    } catch {
+      setRemediations([])
+    } finally {
+      setRemLoading(false)
+    }
+  }
 
   const load = async () => {
     if (!product.trim()) return
@@ -288,6 +463,7 @@ export function DashboardPage() {
     try {
       const res = await getSummary(product.trim(), windowDays, fromDate || undefined, toDate || undefined)
       setSummary(res.data)
+      void loadRemediations(product.trim(), windowDays)
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -295,7 +471,16 @@ export function DashboardPage() {
     }
   }
 
-  const handleExport = (fmt: 'json' | 'md') => {
+  // Refetch the guide when a remediation run for the loaded product/window finishes.
+  useEffect(() => {
+    if (!summary || remediation.running) return
+    if (remediation.product === product.trim() && remediation.windowDays === windowDays) {
+      void loadRemediations(product.trim(), windowDays)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remediation.completedToken])
+
+  const handleExport = (fmt: 'json' | 'md' | 'pdf') => {
     if (!product.trim()) return
     downloadReport(product.trim(), windowDays, fmt, fromDate || undefined, toDate || undefined)
   }
@@ -315,6 +500,9 @@ export function DashboardPage() {
               </button>
               <button className="btn btn-secondary btn-sm" onClick={() => handleExport('md')}>
                 <FileText size={14} /> Markdown
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => handleExport('pdf')}>
+                <FileDown size={14} /> PDF
               </button>
             </div>
           )}
@@ -456,6 +644,24 @@ export function DashboardPage() {
               </ol>
             </div>
           )}
+
+          {/* Remediation guide (grounded fixes for clusters of similar questions) */}
+          <RemediationGuide
+            items={remediations}
+            loading={remLoading}
+            running={remediation.running && remediation.product === product.trim() && remediation.windowDays === windowDays}
+            log={remediation.log}
+            hasSummary={!!summary}
+            onGenerate={(regenerate) =>
+              void startRemediation({
+                product: product.trim(),
+                windowDays,
+                fromDate: fromDate || undefined,
+                toDate: toDate || undefined,
+                regenerate,
+              })
+            }
+          />
 
           <QuestionDrawer
             target={drill}

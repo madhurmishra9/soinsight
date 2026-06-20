@@ -19,8 +19,8 @@ from sqlalchemy import Engine
 from sqlalchemy import func as sql_func
 from sqlmodel import Session, col, select
 
-from app.dates import resolve_range
-from app.models import Question, Run
+from app.dates import resolve_range, utcfromtimestamp, utcnow
+from app.models import Answer, Question, Run
 from services.so_client import SOClient
 
 log = structlog.get_logger("soinsight.ingestion")
@@ -31,6 +31,9 @@ _SO_CREATION_DATE = "creationDate"
 _SO_AUTHOR_KEY = "owner"
 _SO_AUTHOR_ID = "id"
 _SO_HAS_ACCEPTED = "isAnswered"
+# Answer field names (guessed — verify in Swagger):
+_SO_ANSWER_ID = "id"
+_SO_ANSWER_ACCEPTED = "isAccepted"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DAILY_BUDGET = 9_500  # 95 % of the 10 000/day quota — remaining is headroom
@@ -49,10 +52,10 @@ class BudgetTracker:
     def __init__(self, daily_limit: int = DAILY_BUDGET) -> None:
         self._limit = daily_limit
         self._count = 0
-        self._date = datetime.utcnow().date()
+        self._date = utcnow().date()
 
     def _maybe_reset(self) -> None:
-        today = datetime.utcnow().date()
+        today = utcnow().date()
         if today != self._date:
             self._count = 0
             self._date = today
@@ -82,6 +85,7 @@ class IngestResult:
     inserted: int = 0
     skipped: int = 0
     errors: int = 0
+    answers_fetched: int = 0
     tags: list[str] = field(default_factory=list)
 
 
@@ -106,11 +110,11 @@ def _map_question(raw: dict[str, Any], team_slug: str | None = None) -> dict[str
             parsed = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
             created_at = parsed.replace(tzinfo=None)
         except ValueError:
-            created_at = datetime.utcnow()
+            created_at = utcnow()
     elif isinstance(raw_date, (int, float)) and raw_date:
-        created_at = datetime.utcfromtimestamp(raw_date)
+        created_at = utcfromtimestamp(raw_date)
     else:
-        created_at = datetime.utcnow()
+        created_at = utcnow()
 
     return {
         "so_id": int(raw[_SO_QUESTION_ID]),
@@ -128,6 +132,40 @@ def _map_question(raw: dict[str, Any], team_slug: str | None = None) -> dict[str
     }
 
 
+def _map_answer(raw: dict[str, Any], question_so_id: int) -> dict[str, Any]:
+    """
+    Map a raw SO Enterprise v3 answer dict → Answer model kwargs.
+
+    Raises KeyError if the answer so_id is missing (caller should catch and log).
+    All other fields fall back to safe defaults when absent.
+    """
+    owner: dict[str, Any] = raw.get(_SO_AUTHOR_KEY) or {}
+
+    raw_date = raw.get(_SO_CREATION_DATE)
+    if isinstance(raw_date, str) and raw_date:
+        try:
+            created_at = datetime.fromisoformat(
+                raw_date.replace("Z", "+00:00")
+            ).replace(tzinfo=None)
+        except ValueError:
+            created_at = utcnow()
+    elif isinstance(raw_date, (int, float)) and raw_date:
+        created_at = utcfromtimestamp(raw_date)
+    else:
+        created_at = utcnow()
+
+    return {
+        "so_id": int(raw[_SO_ANSWER_ID]),
+        "question_so_id": int(question_so_id),
+        "body": str(raw.get("body") or raw.get("bodyMarkdown") or ""),
+        "score": int(raw.get("score") or 0),
+        "is_accepted": bool(raw.get(_SO_ANSWER_ACCEPTED) or raw.get("accepted")),
+        "author_id": int(owner.get(_SO_AUTHOR_ID) or owner.get("accountId") or 0),
+        "author_role": owner.get("role"),
+        "created_at": created_at,
+    }
+
+
 class IngestService:
     """
     Fetches questions from SO Enterprise and upserts them into SQLite.
@@ -138,9 +176,49 @@ class IngestService:
         self,
         client: SOClient,
         budget: BudgetTracker | None = None,
+        fetch_answers: bool = True,
     ) -> None:
         self._client = client
         self._budget = budget or BudgetTracker()
+        # Answers are only fetched when enabled AND the client actually exposes
+        # iter_answers — this keeps lightweight/mocked clients working unchanged.
+        self._fetch_answers = fetch_answers and hasattr(client, "iter_answers")
+
+    async def _ingest_answers(
+        self,
+        question_so_id: int,
+        team: str | None,
+        session: Session,
+    ) -> int:
+        """
+        Fetch and upsert all answers for one question. Returns the number of new
+        answer rows inserted. Failures are non-fatal (logged, return what we got).
+        Charges one budget unit for the answer fetch of this question.
+        """
+        try:
+            self._budget.charge()
+        except BudgetExhaustedError:
+            log.warning("budget_exhausted_answers", question_so_id=question_so_id)
+            return 0
+
+        inserted = 0
+        try:
+            async for raw_a in self._client.iter_answers(question_so_id, team=team):
+                try:
+                    a_data = _map_answer(raw_a, question_so_id=question_so_id)
+                    a_so_id = a_data["so_id"]
+                    exists = session.exec(
+                        select(Answer).where(Answer.so_id == a_so_id)
+                    ).first()
+                    if exists is None:
+                        session.add(Answer(**a_data))
+                        inserted += 1
+                except (KeyError, ValueError, TypeError) as exc:
+                    log.warning("map_answer_failed", error=str(exc))
+        except Exception as exc:  # network/HTTP — don't abort the whole ingest
+            log.warning("answer_fetch_failed", question_so_id=question_so_id, error=str(exc))
+
+        return inserted
 
     async def run(
         self,
@@ -176,6 +254,11 @@ class IngestService:
             for tag in products:
                 await queue.put({"type": "tag_start", "tag": tag})
                 log.info("ingest_tag_start", tag=tag)
+                # Snapshot so we can emit a per-tag delta even when the tag
+                # yields fewer than 25 questions and the in-loop progress
+                # event never fires.
+                inserted_at_tag_start = result.inserted
+                skipped_at_tag_start = result.skipped
 
                 try:
                     self._budget.charge()
@@ -197,6 +280,14 @@ class IngestService:
                     if last_ts and last_ts > since:
                         effective_since = last_ts
                         log.info("ingest_incremental", tag=tag, since=str(effective_since))
+                        await queue.put({
+                            "type": "info",
+                            "message": (
+                                f"{tag}: incremental — fetching only questions newer than "
+                                f"{effective_since:%Y-%m-%d %H:%M} UTC "
+                                "(already stored locally up to here)."
+                            ),
+                        })
                     else:
                         log.info("ingest_full", tag=tag, since=str(effective_since))
 
@@ -214,6 +305,16 @@ class IngestService:
                         if existing is None:
                             session.add(Question(**q_data))
                             result.inserted += 1
+                            # Pull this question's answers (best-effort, gated by
+                            # config + budget). Linked by question_so_id, so the
+                            # parent's local PK is not needed here.
+                            if self._fetch_answers and q_data.get("answer_count"):
+                                fetched = await self._ingest_answers(
+                                    question_so_id=so_id,
+                                    team=team,
+                                    session=session,
+                                )
+                                result.answers_fetched += fetched
                         else:
                             result.skipped += 1
 
@@ -230,17 +331,31 @@ class IngestService:
                         result.errors += 1
                         log.warning("map_question_failed", error=str(exc))
 
+                # Per-tag wrap-up commit + progress event — guarantees the UI
+                # always sees a final count for the tag, even at low volume.
+                session.commit()
+                await queue.put({
+                    "type": "progress",
+                    "tag": tag,
+                    "inserted": result.inserted,
+                    "skipped": result.skipped,
+                    "tag_inserted": result.inserted - inserted_at_tag_start,
+                    "tag_skipped": result.skipped - skipped_at_tag_start,
+                    "tag_done": True,
+                })
+
             session.commit()
 
             if run_id is not None:
                 run_rec_upd = session.get(Run, run_id)
                 if run_rec_upd is not None:
-                    run_rec_upd.finished_at = datetime.utcnow()
+                    run_rec_upd.finished_at = utcnow()
                     run_rec_upd.status = "done" if result.errors == 0 else "partial"
                     run_rec_upd.counts = json.dumps({
                         "inserted": result.inserted,
                         "skipped": result.skipped,
                         "errors": result.errors,
+                        "answers_fetched": result.answers_fetched,
                     })
                     session.add(run_rec_upd)
                     session.commit()
@@ -250,12 +365,14 @@ class IngestService:
             inserted=result.inserted,
             skipped=result.skipped,
             errors=result.errors,
+            answers_fetched=result.answers_fetched,
         )
         await queue.put({
             "type": "done",
             "inserted": result.inserted,
             "skipped": result.skipped,
             "errors": result.errors,
+            "answers_fetched": result.answers_fetched,
         })
         await queue.put(None)
         return result

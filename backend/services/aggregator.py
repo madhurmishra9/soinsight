@@ -18,6 +18,8 @@ import structlog
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from app.dates import utcnow
+
 from app.dates import resolve_range
 from app.models import Classification, Pattern, Question, Run
 from app.taxonomy import RECOMMENDATION_MATRIX
@@ -165,7 +167,7 @@ class AggregatorService:
             if run_id is not None:
                 run_upd = session.get(Run, run_id)
                 if run_upd is not None:
-                    run_upd.finished_at = datetime.utcnow()
+                    run_upd.finished_at = utcnow()
                     run_upd.status = "done"
                     run_upd.counts = json.dumps({
                         "products": len(products),
@@ -332,7 +334,7 @@ class AggregatorService:
         if total_count < self._min_trend:
             return None
 
-        now = _now or datetime.utcnow()
+        now = _now or utcnow()
         halfway = now - timedelta(days=window_days // 2)
 
         first_count = 0

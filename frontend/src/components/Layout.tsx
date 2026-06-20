@@ -1,5 +1,16 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { BarChart2, Download, LayoutDashboard, Moon, Settings2, Sun } from 'lucide-react'
+import {
+  BarChart2,
+  BellOff,
+  Download,
+  History,
+  LayoutDashboard,
+  Lightbulb,
+  Moon,
+  Settings2,
+  Sun,
+  TrendingUp,
+} from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 
 export function Layout() {
@@ -27,6 +38,20 @@ export function Layout() {
         <div className="sidebar-section" style={{ marginTop: 8 }}>Insights</div>
         <NavLink to="/dashboard" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <LayoutDashboard size={16} /> Dashboard
+        </NavLink>
+        <NavLink to="/trends" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+          <TrendingUp size={16} /> Rising trends
+        </NavLink>
+        <NavLink to="/tag-suggestions" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+          <Lightbulb size={16} /> Tag suggestions
+        </NavLink>
+        <NavLink to="/snoozed" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+          <BellOff size={16} /> Snoozed
+        </NavLink>
+
+        <div className="sidebar-section" style={{ marginTop: 8 }}>Operations</div>
+        <NavLink to="/runs" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+          <History size={16} /> Run history
         </NavLink>
 
         <button className="theme-toggle" onClick={toggle} title="Toggle theme">

@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
     default_tags: str = "cloudsql,cloudspanner,cloudstorage"
+    # When true, ingestion also pulls each new question's answers (one extra
+    # API call per newly-inserted question that reports answer_count > 0).
+    fetch_answers: bool = True
     db_path: str = "./data/soinsight.db"
     chroma_path: str = "./data/chroma"
     log_level: str = "INFO"

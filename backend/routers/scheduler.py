@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
+from app.dates import utcnow
 from app.db import engine as app_engine
 from app.models import ScheduleConfig
 
@@ -97,7 +98,7 @@ async def set_schedule(body: ScheduleConfigRequest) -> ScheduleConfigResponse:
         cfg.window_days = body.window_days
 
         if body.enabled and cfg.next_run_at is None:
-            cfg.next_run_at = datetime.utcnow() + timedelta(hours=body.interval_hours)
+            cfg.next_run_at = utcnow() + timedelta(hours=body.interval_hours)
         if not body.enabled:
             cfg.next_run_at = None
 

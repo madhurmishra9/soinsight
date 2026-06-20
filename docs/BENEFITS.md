@@ -181,7 +181,29 @@ is delivered **without** sending your data anywhere. Full details in
 
 ---
 
-## 5. Who benefits, and how
+## 5. Analyst-friction reducers
+
+Three small features that cut the per-week friction once the pipeline is
+running:
+
+- **Snooze handled patterns.** Once a recurring `(product, main, sub)` cluster
+  has been acknowledged or shipped a fix, snooze it for *N* days (or
+  indefinitely) and it stops surfacing in Top Issues / patterns until the
+  snooze expires. Keyed by `(product, main, sub)`, so it survives window
+  changes and re-aggregation.
+- **Rising-volume detector.** `/api/insights/trends` compares a recent window
+  against the trailing baseline and flags categories whose recent volume is ≥
+  `threshold`× the trailing average. Surfaces emerging issues you wouldn't
+  spot from a static category breakdown alone.
+- **Tag auto-discovery.** `/api/insights/tag-suggestions` surfaces tags from
+  the SO instance that aren't in your tracked list yet, ranked by instance
+  volume, with the local coverage ratio. Catches the case where a new product
+  is getting traction and nobody added its tag to the schedule.
+
+These are read-only and run against the same local SQLite — no extra cost
+beyond the existing pipeline.
+
+## 6. Who benefits, and how
 
 | Role | What the automation gives them |
 |---|---|

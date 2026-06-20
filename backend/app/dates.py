@@ -1,4 +1,19 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def utcnow() -> datetime:
+    """Return a naive UTC datetime.
+
+    `datetime.utcnow()` is deprecated in Python 3.12+ and removed in 3.14.
+    The SQLite columns are stored as naive datetimes, so we strip tzinfo
+    here to keep schema compatibility.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def utcfromtimestamp(ts: float) -> datetime:
+    """Naive UTC datetime from a POSIX timestamp — deprecation-safe replacement."""
+    return datetime.fromtimestamp(ts, timezone.utc).replace(tzinfo=None)
 
 
 def resolve_range(
@@ -6,7 +21,7 @@ def resolve_range(
     from_date: str | None = None,
     to_date: str | None = None,
 ) -> tuple[datetime, datetime]:
-    now = datetime.utcnow()
+    now = utcnow()
     since = datetime.fromisoformat(from_date) if from_date else now - timedelta(days=window_days)
     until = (
         datetime.fromisoformat(to_date) + timedelta(days=1) - timedelta(microseconds=1)

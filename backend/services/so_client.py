@@ -261,6 +261,38 @@ class SOClient:
             if exhausted:
                 return
 
+    async def iter_answers(
+        self,
+        question_id: int,
+        team: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """
+        Yield individual answer dicts for the question with id *question_id*.
+        Scoped to *team* if provided.
+
+        TODO: confirm the answers path and team-scoping in Swagger. SO Enterprise
+        v3 typically exposes answers at /questions/{id}/answers; some instances
+        require a body/filter param to include the answer body. If the body comes
+        back empty, add the appropriate include/filter param here.
+        """
+        path = (
+            f"/teams/{team}/questions/{question_id}/answers"
+            if team
+            else f"/questions/{question_id}/answers"
+        )
+        try:
+            async for page in self._paginate(path):
+                for item in page:
+                    if isinstance(item, dict):
+                        yield item
+        except httpx.HTTPStatusError as exc:
+            # A question with no answers (or an instance that 404s the sub-resource)
+            # is not a fatal error — just yields nothing.
+            if exc.response.status_code == 404:
+                log.info("so_answers_not_found", question_id=question_id)
+                return
+            raise
+
     async def list_tags(self, team: str | None = None) -> AsyncIterator[dict[str, Any]]:
         """
         Yield tag dicts (name, question_count, …).

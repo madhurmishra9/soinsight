@@ -481,3 +481,70 @@ def test_render_markdown_includes_technical_ratio() -> None:
     assert "60.0%" in md
     assert "40.0%" in md
     assert "APPROXIMATE" in md
+
+
+# ─── Report includes the grounded remediation guide ───────────────────────────
+
+def _remediation_client() -> TestClient:
+    """A client seeded with one signal question + a stored Remediation row."""
+    from app.models import Answer, Remediation
+    engine = _make_engine()
+    with Session(engine) as s:
+        q = _make_question(1, ["python"], author_id=1)
+        s.add(q)
+        s.commit()
+        s.refresh(q)
+        s.add(_make_cls(q.id, "Technical", "Reliability issues or instability"))
+        s.add(Answer(
+            so_id=900, question_so_id=1, body="Enable connection keepalive.",
+            score=4, is_accepted=True, created_at=datetime.utcnow(),
+        ))
+        s.add(Remediation(
+            product_tag="python", window_days=30,
+            main_category="Technical", sub_category="Reliability issues or instability",
+            question_count=3, distinct_users=2,
+            root_cause="Idle connections reaped under load.",
+            solution="Raise idle timeout and enable keepalive on the pool.",
+            prevention="Document the recommended pool settings in onboarding.",
+            confidence=0.85, grounded=True,
+            evidence_question_so_ids=json.dumps([1]),
+            evidence_answer_so_ids=json.dumps([900]),
+            content_hash="h", model="test-model", generated_at=datetime.utcnow(),
+        ))
+        s.commit()
+
+    app = FastAPI()
+    app.include_router(insights_router)
+
+    def override() -> Any:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override
+    return TestClient(app)
+
+
+def test_report_markdown_includes_remediation_guide() -> None:
+    client = _remediation_client()
+    md = client.get("/api/insights/report?product=python&window=30&format=md").text
+    assert "## Remediation Guide" in md
+    assert "Raise idle timeout and enable keepalive" in md
+    assert "Prevent recurrence:" in md
+    assert "Grounded in:" in md
+
+
+def test_report_json_includes_remediations() -> None:
+    client = _remediation_client()
+    data = client.get("/api/insights/report?product=python&window=30&format=json").json()
+    assert "remediations" in data
+    assert len(data["remediations"]) == 1
+    rem = data["remediations"][0]
+    assert rem["grounded"] is True
+    assert rem["evidence_questions"][0]["so_id"] == 1
+    assert rem["evidence_answers"][0]["so_id"] == 900
+
+
+def test_report_markdown_without_remediations_has_no_guide(seeded_client: TestClient) -> None:
+    # The default seeded client has no Remediation rows.
+    md = seeded_client.get("/api/insights/report?product=python&window=30&format=md").text
+    assert "## Remediation Guide" not in md
