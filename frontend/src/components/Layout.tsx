@@ -3,6 +3,7 @@ import {
   BarChart2,
   BellOff,
   Download,
+  Gauge,
   History,
   LayoutDashboard,
   Lightbulb,
@@ -41,6 +42,9 @@ export function Layout() {
         </NavLink>
         <NavLink to="/trends" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <TrendingUp size={16} /> Rising trends
+        </NavLink>
+        <NavLink to="/metrics" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+          <Gauge size={16} /> Metrics
         </NavLink>
         <NavLink to="/tag-suggestions" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <Lightbulb size={16} /> Tag suggestions

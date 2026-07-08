@@ -217,6 +217,6 @@ beyond the existing pipeline.
 ## See also
 
 - [README](../README.md) — quick start and full feature reference
-- [User Guide](USER_GUIDE.md) — first-time setup, daily use, the four pages, exports
+- [User Guide](USER_GUIDE.md) — first-time setup, daily use, every tab, exports
 - [Architecture](ARCHITECTURE.md) — components, data flow, scheduling, tables
 - [Security](SECURITY.md) — data handling, secrets, network posture

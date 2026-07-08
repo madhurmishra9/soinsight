@@ -34,6 +34,17 @@ export interface TagValidation {
   question_count: number | null
 }
 
+export interface AvailableTag {
+  tag: string
+  question_count: number
+}
+
+export interface AvailableTagsResponse {
+  ok: boolean
+  tags: AvailableTag[]
+  total: number
+}
+
 export interface TagCoverage {
   tag: string
   question_count: number
@@ -115,6 +126,7 @@ export interface SettingsPayload {
   ollama_url: string
   ollama_model?: string
   default_tags?: string
+  has_api_key?: boolean
 }
 
 export interface FetchRequest {
@@ -189,4 +201,67 @@ export interface TagSuggestion {
   instance_count: number
   local_count: number
   coverage_ratio: number
+}
+
+// ── Metrics (pipeline health) ─────────────────────────────────────────────────
+
+export interface UnclassifiedReason {
+  reason: string
+  count: number
+}
+
+export interface TagMetrics {
+  tag: string
+  total_questions: number
+  answered: number
+  unanswered: number
+  classified: number
+  unclassified: number
+  accepted: number
+  acceptance_rate: number | null
+  mean_time_to_answer_hours: number | null
+}
+
+export interface MetricsSummary {
+  window_days: number
+  from_date: string | null
+  to_date: string | null
+  tags: string[]
+  total_questions: number
+  answered: number
+  unanswered: number
+  classified: number
+  unclassified: number
+  unclassified_reasons: UnclassifiedReason[]
+  accepted: number
+  not_accepted: number
+  acceptance_rate: number | null
+  avg_answers_per_question: number | null
+  avg_views_per_question: number | null
+  distinct_askers: number
+  mean_time_to_answer_hours: number | null
+  median_time_to_answer_hours: number | null
+  by_tag: TagMetrics[]
+}
+
+export type MetricBucket =
+  | 'total'
+  | 'answered'
+  | 'unanswered'
+  | 'classified'
+  | 'unclassified'
+  | 'accepted'
+  | 'not_accepted'
+  | 'answered_with_time'
+
+export interface MetricQuestionRef {
+  so_id: number
+  title: string
+  url: string | null
+  score: number
+  view_count: number
+  answer_count: number
+  has_accepted: boolean
+  created_at: string
+  time_to_first_answer_hours: number | null
 }

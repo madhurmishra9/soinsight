@@ -8,6 +8,7 @@ technical_ratio is APPROXIMATE (question-tag heuristic, not a verified user attr
 from __future__ import annotations
 
 import json
+import statistics
 from collections.abc import Generator
 from datetime import datetime, timedelta
 from typing import Literal
@@ -25,13 +26,22 @@ from app.models import Answer, Classification, Pattern, Question, Remediation
 from app.settings import settings as app_settings
 from routers.dismissals import active_dismissed_keys
 from routers.settings import _current_config
-from services.aggregator import _compute_technical_ratio, _question_has_tag
+from services.aggregator import (
+    _TECHNICAL_TAGS,
+    _compute_technical_ratio,
+    _question_has_tag,
+    _safe_tags,
+)
 
 log = structlog.get_logger("soinsight.routers.insights")
 
 router = APIRouter(prefix="/api/insights", tags=["insights"])
 
 _NOISE_MAIN = "Misuse / Noise"
+# Matches the Dashboard's "Sub-category frequency" chart, which shows the top 8
+# by volume — keeping both "top N" views on the Dashboard in lockstep so a
+# category that appears in the chart isn't inexplicably missing from the list.
+_TOP_ISSUES_LIMIT = 8
 
 
 # ─── Session dependency ────────────────────────────────────────────────────────
@@ -88,7 +98,7 @@ class InsightsSummary(BaseModel):
     total_questions: int                   # signal (non-noise) only
     noise_count: int                       # reported but excluded from total
     category_breakdown: list[CategoryBreakdownItem]
-    top_issues: list[CategoryBreakdownItem]   # top 5 by question count
+    top_issues: list[CategoryBreakdownItem]   # top _TOP_ISSUES_LIMIT by question count
     patterns: list[PatternItem]
     recommended_actions: list[str]         # unique, in pattern-frequency order
     # APPROXIMATE — question-tag heuristic; never a verified user attribute
@@ -365,7 +375,7 @@ def _build_summary(
         noise_count=len(noise_cls),
         noise_questions=noise_qs,
         category_breakdown=breakdown,
-        top_issues=breakdown[:5],
+        top_issues=breakdown[:_TOP_ISSUES_LIMIT],
         patterns=pattern_items,
         recommended_actions=recommended_actions,
         technical_ratio=tech_ratio,
@@ -391,14 +401,14 @@ def _q_lines(questions: list[QuestionRef], indent: str = "   ") -> list[str]:
     """
     out: list[str] = []
     for q in questions:
-        link = f"[{q.title}]({q.url})" if q.url else f"{q.title} (#{q.so_id})"
-        suffix = f" — score {q.score}, {q.view_count} views"
+        link = f"[{q.title}]({q.url})" if q.url else q.title
+        suffix = f" [Q#{q.so_id}] — score {q.score}, {q.view_count} views"
         if q.answer_count:
             suffix += f", {q.answer_count} answers"
         out.append(f"{indent}- {link}{suffix}")
         for a in q.answers:
             tag = "✓ accepted" if a.is_accepted else f"score {a.score}"
-            out.append(f"{indent}  - _({tag})_ {_truncate(a.body)}")
+            out.append(f"{indent}  - _[A#{a.so_id}] ({tag})_ {_truncate(a.body)}")
     return out
 
 
@@ -591,15 +601,15 @@ def _remediation_md(items: list[dict]) -> list[str]:
         if it["evidence_questions"]:
             lines.append("**Grounded in:**")
             for q in it["evidence_questions"]:
-                link = (
-                    f"[{q['title']}]({q['url']})" if q["url"]
-                    else f"{q['title']} (#{q['so_id']})"
-                )
-                lines.append(f"- {link}")
+                link = f"[{q['title']}]({q['url']})" if q["url"] else q["title"]
+                lines.append(f"- {link} [Q#{q['so_id']}]")
             lines.append("")
         for a in it["evidence_answers"]:
             tag = "accepted" if a["is_accepted"] else f"score {a['score']}"
-            lines.append(f"  - _answer to #{a['question_so_id']} ({tag}):_ {a['snippet']}")
+            lines.append(
+                f"  - _[A#{a['so_id']}] answer to [Q#{a['question_so_id']}]"
+                f" ({tag}):_ {a['snippet']}"
+            )
         if it["evidence_answers"]:
             lines.append("")
     return lines
@@ -827,6 +837,322 @@ async def get_questions(
         product, window, main, sub, session, from_date, to_date, noise,
         include_answers=True,
     )
+
+
+@router.get("/technical-questions", response_model=list[QuestionRef])
+async def get_technical_questions(
+    product: str = Query(..., description="Product/tag"),
+    window: int = Query(30, ge=1, le=365, description="Window in days"),
+    technical: bool = Query(True, description="True = technical bucket, False = non-technical"),
+    from_date: str | None = Query(None, description="YYYY-MM-DD"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD"),
+    session: Session = Depends(get_session),
+) -> list[QuestionRef]:
+    """Questions behind the Dashboard's Technical / Non-technical split stat.
+
+    APPROXIMATE, same heuristic as the stat itself: a question counts as
+    "technical" if it carries at least one tag from a fixed technical-tag list
+    (see services.aggregator._TECHNICAL_TAGS) — never a verified user attribute.
+    """
+    since, until = resolve_range(window, from_date, to_date)
+    all_qs = session.exec(
+        select(Question).where(Question.created_at >= since, Question.created_at <= until)
+    ).all()
+    questions = [q for q in all_qs if _question_has_tag(q, product)]
+
+    def _is_technical(q: Question) -> bool:
+        return any(t.lower() in _TECHNICAL_TAGS for t in _safe_tags(q))
+
+    selected = [q for q in questions if _is_technical(q) == technical]
+    selected.sort(key=lambda x: x.score, reverse=True)
+    return [_question_ref(q, session, include_answers=True) for q in selected]
+
+
+class UnclassifiedReason(BaseModel):
+    reason: str
+    count: int
+
+
+class TagMetrics(BaseModel):
+    tag: str
+    total_questions: int
+    answered: int
+    unanswered: int
+    classified: int
+    unclassified: int
+    accepted: int
+    acceptance_rate: float | None = None
+    mean_time_to_answer_hours: float | None = None
+
+
+class MetricsSummary(BaseModel):
+    window_days: int
+    from_date: str | None
+    to_date: str | None
+    tags: list[str]              # tags actually present in the range (breakdown keys)
+    total_questions: int
+    answered: int
+    unanswered: int
+    classified: int              # has >=1 Classification row (signal or noise)
+    unclassified: int            # fetched but never run through Analysis — "skipped/missing"
+    unclassified_reasons: list[UnclassifiedReason]
+    accepted: int                        # has an accepted answer
+    not_accepted: int                    # answered but no answer was accepted
+    acceptance_rate: float | None        # accepted / answered
+    avg_answers_per_question: float | None
+    avg_views_per_question: float | None
+    distinct_askers: int                 # unique author_id across questions in range
+    mean_time_to_answer_hours: float | None    # avg time-to-first-answer, where captured
+    median_time_to_answer_hours: float | None
+    by_tag: list[TagMetrics]
+
+
+def _first_answer_at(so_ids: list[int], session: Session) -> dict[int, datetime]:
+    """Earliest stored Answer.created_at per question so_id.
+
+    Only covers questions whose answers were actually captured (see
+    settings.fetch_answers) — a question with answer_count > 0 but no stored
+    Answer rows simply won't appear in this map, and is excluded from the
+    time-to-answer metrics rather than skewing them.
+    """
+    if not so_ids:
+        return {}
+    rows = session.exec(
+        select(Answer.question_so_id, func.min(Answer.created_at))
+        .where(col(Answer.question_so_id).in_(so_ids))
+        .group_by(Answer.question_so_id)  # type: ignore[arg-type]
+    ).all()
+    return dict(rows)
+
+
+def _time_to_answer_hours(
+    questions: list[Question], first_answer_at: dict[int, datetime]
+) -> list[float]:
+    deltas: list[float] = []
+    for q in questions:
+        first_at = first_answer_at.get(q.so_id)
+        if first_at is None or q.created_at is None:
+            continue
+        hours = (first_at - q.created_at).total_seconds() / 3600
+        if hours >= 0:
+            deltas.append(hours)
+    return deltas
+
+
+@router.get("/metrics", response_model=MetricsSummary)
+async def get_metrics(
+    tags: str = Query("", description="Comma-separated tags; empty = every tag present in range"),
+    window: int = Query(30, ge=1, le=365, description="Window in days"),
+    from_date: str | None = Query(None, description="YYYY-MM-DD — overrides window"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD — overrides window"),
+    session: Session = Depends(get_session),
+) -> MetricsSummary:
+    """Pipeline-health and engagement metrics for a date range.
+
+    Distinct from /summary — this reports on the *ingestion/analysis pipeline itself*
+    (did we fetch everything, did Analysis run on it, how quickly did questions get
+    answered) rather than category insights. A question counts as "classified" once
+    it has at least one Classification row (signal or noise); the classifier always
+    writes a row (falling back to a noise classification on repeated model failures —
+    see services/classifier.py), so an "unclassified" question here means Analysis
+    simply has not been run over it yet for this product/window.
+    """
+    since, until = resolve_range(window, from_date, to_date)
+    all_qs = session.exec(
+        select(Question).where(Question.created_at >= since, Question.created_at <= until)
+    ).all()
+
+    wanted = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    questions = (
+        [q for q in all_qs if any(_question_has_tag(q, t) for t in wanted)]
+        if wanted
+        else all_qs
+    )
+
+    q_ids = [q.id for q in questions if q.id is not None]
+    classified_ids: set[int] = set()
+    if q_ids:
+        classified_ids = set(
+            session.exec(
+                select(Classification.question_id).where(
+                    Classification.question_id.in_(q_ids)  # type: ignore[attr-defined]
+                )
+            ).all()
+        )
+
+    total = len(questions)
+    answered = sum(1 for q in questions if q.answer_count > 0)
+    classified = sum(1 for q in questions if q.id in classified_ids)
+    unclassified = total - classified
+
+    unclassified_reasons: list[UnclassifiedReason] = []
+    if unclassified:
+        unclassified_reasons.append(UnclassifiedReason(
+            reason="Fetched but not yet processed by an Analysis run for this product/window",
+            count=unclassified,
+        ))
+
+    accepted = sum(1 for q in questions if q.has_accepted)
+    not_accepted = answered - accepted
+    acceptance_rate = round(accepted / answered, 3) if answered else None
+    avg_answers = round(sum(q.answer_count for q in questions) / total, 2) if total else None
+    avg_views = round(sum(q.view_count for q in questions) / total, 1) if total else None
+    distinct_askers = len({q.author_id for q in questions})
+
+    first_answer_at = _first_answer_at([q.so_id for q in questions], session)
+    tta = _time_to_answer_hours(questions, first_answer_at)
+    mean_tta = round(sum(tta) / len(tta), 1) if tta else None
+    median_tta = round(statistics.median(tta), 1) if tta else None
+
+    tag_set = sorted(wanted) if wanted else sorted({t for q in questions for t in _safe_tags(q)})
+    by_tag: list[TagMetrics] = []
+    for t in tag_set:
+        tqs = [q for q in questions if _question_has_tag(q, t)]
+        t_total = len(tqs)
+        t_answered = sum(1 for q in tqs if q.answer_count > 0)
+        t_classified = sum(1 for q in tqs if q.id in classified_ids)
+        t_accepted = sum(1 for q in tqs if q.has_accepted)
+        t_tta = _time_to_answer_hours(tqs, first_answer_at)
+        by_tag.append(TagMetrics(
+            tag=t,
+            total_questions=t_total,
+            answered=t_answered,
+            unanswered=t_total - t_answered,
+            classified=t_classified,
+            unclassified=t_total - t_classified,
+            accepted=t_accepted,
+            acceptance_rate=round(t_accepted / t_answered, 3) if t_answered else None,
+            mean_time_to_answer_hours=round(sum(t_tta) / len(t_tta), 1) if t_tta else None,
+        ))
+    by_tag.sort(key=lambda x: x.total_questions, reverse=True)
+
+    log.info(
+        "metrics_built", window_days=window, tags=tag_set,
+        total=total, answered=answered, classified=classified, unclassified=unclassified,
+    )
+
+    return MetricsSummary(
+        window_days=window,
+        from_date=from_date,
+        to_date=to_date,
+        tags=tag_set,
+        total_questions=total,
+        answered=answered,
+        unanswered=total - answered,
+        classified=classified,
+        unclassified=unclassified,
+        unclassified_reasons=unclassified_reasons,
+        accepted=accepted,
+        not_accepted=not_accepted,
+        acceptance_rate=acceptance_rate,
+        avg_answers_per_question=avg_answers,
+        avg_views_per_question=avg_views,
+        distinct_askers=distinct_askers,
+        mean_time_to_answer_hours=mean_tta,
+        median_time_to_answer_hours=median_tta,
+        by_tag=by_tag,
+    )
+
+
+MetricBucket = Literal[
+    "total", "answered", "unanswered", "classified", "unclassified",
+    "accepted", "not_accepted", "answered_with_time",
+]
+
+
+class MetricQuestionRef(BaseModel):
+    so_id: int
+    title: str
+    url: str | None = None
+    score: int
+    view_count: int
+    answer_count: int
+    has_accepted: bool
+    created_at: datetime
+    time_to_first_answer_hours: float | None = None
+
+
+@router.get("/metrics/questions", response_model=list[MetricQuestionRef])
+async def get_metric_questions(
+    bucket: MetricBucket = Query(..., description="Which Metrics-tab number to drill into"),
+    tags: str = Query("", description="Comma-separated tags; empty = every tag present in range"),
+    window: int = Query(30, ge=1, le=365, description="Window in days"),
+    from_date: str | None = Query(None, description="YYYY-MM-DD — overrides window"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD — overrides window"),
+    limit: int = Query(500, ge=1, le=5000),
+    session: Session = Depends(get_session),
+) -> list[MetricQuestionRef]:
+    """The underlying questions behind one number on the Metrics tab.
+
+    Mirrors the same filtering /metrics uses, so clicking a stat there and calling
+    this with the matching `bucket` always reproduces exactly the set that number
+    was computed from.
+    """
+    since, until = resolve_range(window, from_date, to_date)
+    all_qs = session.exec(
+        select(Question).where(Question.created_at >= since, Question.created_at <= until)
+    ).all()
+
+    wanted = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    questions = (
+        [q for q in all_qs if any(_question_has_tag(q, t) for t in wanted)]
+        if wanted
+        else all_qs
+    )
+
+    q_ids = [q.id for q in questions if q.id is not None]
+    classified_ids: set[int] = set()
+    if q_ids:
+        classified_ids = set(
+            session.exec(
+                select(Classification.question_id).where(
+                    Classification.question_id.in_(q_ids)  # type: ignore[attr-defined]
+                )
+            ).all()
+        )
+
+    first_answer_at = _first_answer_at([q.so_id for q in questions], session)
+
+    if bucket == "total":
+        selected = questions
+    elif bucket == "answered":
+        selected = [q for q in questions if q.answer_count > 0]
+    elif bucket == "unanswered":
+        selected = [q for q in questions if q.answer_count == 0]
+    elif bucket == "classified":
+        selected = [q for q in questions if q.id in classified_ids]
+    elif bucket == "unclassified":
+        selected = [q for q in questions if q.id not in classified_ids]
+    elif bucket == "accepted":
+        selected = [q for q in questions if q.has_accepted]
+    elif bucket == "not_accepted":
+        selected = [q for q in questions if q.answer_count > 0 and not q.has_accepted]
+    else:  # answered_with_time
+        selected = [q for q in questions if q.so_id in first_answer_at]
+
+    if bucket == "answered_with_time":
+        selected = sorted(
+            selected,
+            key=lambda q: (first_answer_at[q.so_id] - q.created_at).total_seconds(),
+            reverse=True,
+        )
+    else:
+        selected = sorted(selected, key=lambda q: q.score, reverse=True)
+
+    out: list[MetricQuestionRef] = []
+    for q in selected[:limit]:
+        first_at = first_answer_at.get(q.so_id)
+        tta = (
+            (first_at - q.created_at).total_seconds() / 3600
+            if first_at and q.created_at else None
+        )
+        out.append(MetricQuestionRef(
+            so_id=q.so_id, title=q.title, url=_question_url(q.so_id),
+            score=q.score, view_count=q.view_count, answer_count=q.answer_count,
+            has_accepted=q.has_accepted, created_at=q.created_at,
+            time_to_first_answer_hours=round(tta, 1) if tta is not None else None,
+        ))
+    return out
 
 
 @router.get("/report")

@@ -165,6 +165,6 @@ it sits next to them and answers a question they were never designed to answer.
 
 - [README](../README.md) — quick start and full feature reference
 - [BENEFITS.md](BENEFITS.md) — why the pipeline is automated (launcher, scheduler, incremental runs)
-- [User Guide](USER_GUIDE.md) — first-time setup, daily use, the four pages, exports
+- [User Guide](USER_GUIDE.md) — first-time setup, daily use, every tab, exports
 - [Architecture](ARCHITECTURE.md) — components, data flow, taxonomy, tables
 - [Security](SECURITY.md) — data handling, secrets, network posture

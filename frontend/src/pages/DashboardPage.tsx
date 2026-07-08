@@ -15,11 +15,12 @@ import { getSummary, downloadReport, getRemediations } from '../api'
 import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
 import { useRuns } from '../context/RunsContext'
+import { usePageState } from '../context/PageStateContext'
 import { CardSkeleton, StatsSkeleton } from '../components/Skeleton'
 import { QuestionDrawer } from '../components/QuestionDrawer'
 import type { Drill } from '../components/QuestionDrawer'
 import { cssVar, useThemeTick } from '../hooks/useTheme'
-import type { InsightsSummary, CategoryBreakdownItem, PatternItem, RemediationItem } from '../types/api'
+import type { CategoryBreakdownItem, PatternItem, RemediationItem } from '../types/api'
 
 const WINDOWS = [7, 14, 30, 60, 90]
 
@@ -232,15 +233,21 @@ function PatternsSection({ patterns, topIssues, totalSignal, onSelect }: {
   )
 }
 
-function TechnicalSplit({ techRatio, nonTechRatio }: { techRatio: number | null; nonTechRatio: number | null }) {
+function TechnicalSplit({
+  techRatio, nonTechRatio, onSelect,
+}: {
+  techRatio: number | null
+  nonTechRatio: number | null
+  onSelect: (d: Drill) => void
+}) {
   if (techRatio === null) return <div className="text-muted text-sm">No data</div>
 
   const tech = Math.round(techRatio * 100)
   const nonTech = Math.round((nonTechRatio ?? 0) * 100)
 
   const data = [
-    { name: `Technical (${tech}%)`, value: tech, fill: cssVar('--primary') },
-    { name: `Non-technical (${nonTech}%)`, value: nonTech, fill: cssVar('--text-muted') },
+    { name: `Technical (${tech}%)`, value: tech, fill: cssVar('--primary'), technical: true },
+    { name: `Non-technical (${nonTech}%)`, value: nonTech, fill: cssVar('--text-muted'), technical: false },
   ]
 
   return (
@@ -255,14 +262,22 @@ function TechnicalSplit({ techRatio, nonTechRatio }: { techRatio: number | null;
               formatter={(v) => [`${v ?? 0}%`]}
             />
             <Legend wrapperStyle={{ color: cssVar('--text') }} />
-            <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+            <Bar
+              dataKey="value"
+              radius={[4, 4, 0, 0]}
+              cursor="pointer"
+              onClick={(d: any) => onSelect({
+                technical: d?.technical,
+                label: d?.technical ? 'Technical questions' : 'Non-technical questions',
+              })}
+            >
               {data.map((d, i) => <Cell key={i} fill={d.fill} />)}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
       <div className="text-sm text-muted mt-8" style={{ fontStyle: 'italic' }}>
-        ⚠ APPROXIMATE — based on question tags, not verified user profiles.
+        ⚠ APPROXIMATE — based on question tags, not verified user profiles. Click a bar to see the questions.
       </div>
     </div>
   )
@@ -326,6 +341,7 @@ function RemediationCard({ item }: { item: RemediationItem }) {
                     {item.evidence_questions.map((q) => (
                       <li key={q.so_id}>
                         {q.url ? <a href={q.url} target="_blank" rel="noreferrer">{q.title}</a> : q.title}
+                        {' '}<span className="muted">[Q#{q.so_id}]</span>
                       </li>
                     ))}
                   </ul>
@@ -333,7 +349,7 @@ function RemediationCard({ item }: { item: RemediationItem }) {
                 {item.evidence_answers.map((a) => (
                   <div key={a.so_id} style={{ borderLeft: '2px solid var(--border)', paddingLeft: 10, marginBottom: 6 }}>
                     <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                      {a.is_accepted && <Check size={10} />} answer to #{a.question_so_id} · score {a.score}
+                      {a.is_accepted && <Check size={10} />} answer [A#{a.so_id}] to question [Q#{a.question_so_id}] · score {a.score}
                     </span>
                     <div style={{ whiteSpace: 'pre-wrap' }}>{a.snippet}</div>
                   </div>
@@ -366,7 +382,7 @@ function RemediationGuide({
             <Sparkles size={15} style={{ verticalAlign: '-2px', marginRight: 6 }} />
             Remediation guide
           </div>
-          <div className="card-subtitle" style={{ marginBottom: 0 }}>
+          <div className="card-subtitle" style={{ marginTop: 0, marginBottom: 0 }}>
             Grounded, detailed fixes per cluster of similar questions — derived strictly from the captured questions and answers, so the same questions stop recurring.
           </div>
         </div>
@@ -432,25 +448,32 @@ export function DashboardPage() {
   useThemeTick()
   const { knownProducts } = useApp()
   const { remediation, startRemediation } = useRuns()
-  const [product, setProduct] = useState(knownProducts[0] ?? '')
-  const [windowDays, setWindowDays] = useState(30)
-  const [fromDate, setFromDate] = useState('')
-  const [toDate, setToDate] = useState('')
-  const [summary, setSummary] = useState<InsightsSummary | null>(null)
+  const { dashboard, patchDashboard } = usePageState()
+  const { product, windowDays, fromDate, toDate, summary, remediations } = dashboard
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [drill, setDrill] = useState<Drill | null>(null)
-  const [remediations, setRemediations] = useState<RemediationItem[]>([])
   const [remLoading, setRemLoading] = useState(false)
+
+  // Seed the product field from a known tag the first time only, if empty.
+  useEffect(() => {
+    if (!product && knownProducts.length > 0) patchDashboard({ product: knownProducts[0] })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [knownProducts])
+
+  const setProduct = (p: string) => patchDashboard({ product: p })
+  const setWindowDays = (w: number) => patchDashboard({ windowDays: w })
+  const setFromDate = (d: string) => patchDashboard({ fromDate: d })
+  const setToDate = (d: string) => patchDashboard({ toDate: d })
 
   const loadRemediations = async (prod: string, win: number) => {
     if (!prod.trim()) return
     setRemLoading(true)
     try {
       const res = await getRemediations(prod.trim(), win)
-      setRemediations(res.data)
+      patchDashboard({ remediations: res.data })
     } catch {
-      setRemediations([])
+      patchDashboard({ remediations: [] })
     } finally {
       setRemLoading(false)
     }
@@ -462,7 +485,7 @@ export function DashboardPage() {
     setError(null)
     try {
       const res = await getSummary(product.trim(), windowDays, fromDate || undefined, toDate || undefined)
-      setSummary(res.data)
+      patchDashboard({ summary: res.data })
       void loadRemediations(product.trim(), windowDays)
     } catch (err) {
       setError(errorMessage(err))
@@ -609,13 +632,18 @@ export function DashboardPage() {
             {/* Top issues */}
             <div className="card">
               <div className="card-title">Top issues</div>
+              <div className="card-subtitle">Top 8 categories by volume</div>
               <TopIssues issues={summary.top_issues} onSelect={setDrill} />
             </div>
 
             {/* Technical split */}
             <div className="card">
               <div className="card-title">Technical / Non-technical split</div>
-              <TechnicalSplit techRatio={summary.technical_ratio} nonTechRatio={summary.non_technical_ratio} />
+              <TechnicalSplit
+                techRatio={summary.technical_ratio}
+                nonTechRatio={summary.non_technical_ratio}
+                onSelect={setDrill}
+              />
             </div>
           </div>
 

@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, X } from 'lucide-react'
-import { getQuestions } from '../api'
+import { getQuestions, getTechnicalQuestions } from '../api'
 import type { QuestionRef } from '../types/api'
 
-export type Drill = { main: string; sub?: string; label: string; noise?: boolean }
+export type Drill = {
+  main?: string
+  sub?: string
+  label: string
+  noise?: boolean
+  /** When set, the drawer lists the Technical/Non-technical split instead of a category. */
+  technical?: boolean
+}
 
 interface QuestionDrawerProps {
   target: Drill | null
@@ -53,7 +60,7 @@ function AnswerList({ q }: { q: QuestionRef }) {
             >
               <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
                 {a.is_accepted && <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> accepted</span>}
-                <span>score {a.score}</span>
+                <span>[A#{a.so_id}] · score {a.score}</span>
               </div>
               <div style={{ whiteSpace: 'pre-wrap', maxHeight: 220, overflow: 'auto' }}>
                 {stripHtml(a.body)}
@@ -74,7 +81,10 @@ export function QuestionDrawer({ target, product, windowDays, onClose, fromDate,
     if (!target) return
     setLoading(true)
     setItems(null)
-    getQuestions(product, windowDays, target.main, target.sub, fromDate, toDate, noise || target.noise)
+    const req = target.technical !== undefined
+      ? getTechnicalQuestions(product, windowDays, target.technical, fromDate, toDate)
+      : getQuestions(product, windowDays, target.main ?? '', target.sub, fromDate, toDate, noise || target.noise)
+    req
       .then((r) => setItems(r.data))
       .catch(() => setItems([]))
       .finally(() => setLoading(false))
@@ -102,6 +112,7 @@ export function QuestionDrawer({ target, product, windowDays, onClose, fromDate,
                 ) : (
                   q.title
                 )}
+                {' '}<span className="muted">[Q#{q.so_id}]</span>
                 <span className="muted"> · score {q.score} · {q.view_count} views</span>
                 <AnswerList q={q} />
               </li>

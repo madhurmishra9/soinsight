@@ -62,6 +62,61 @@ def test_post_settings_stores_config_for_later_use(client: TestClient) -> None:
     assert _current_config["team"] == "t"
 
 
+def test_post_settings_reports_has_api_key(client: TestClient) -> None:
+    r = client.post(
+        "/api/settings",
+        json={
+            "base_url": "https://demo.stackenterprise.co/api/v3",
+            "api_key": "secret-key",
+            "team": "",
+        },
+    )
+    assert r.json()["has_api_key"] is True
+
+
+def test_get_settings_reports_has_api_key_false_when_unset(client: TestClient) -> None:
+    r = client.get("/api/settings")
+    assert r.json()["has_api_key"] is False
+
+
+def test_post_settings_blank_api_key_keeps_existing_key(client: TestClient) -> None:
+    client.post(
+        "/api/settings",
+        json={
+            "base_url": "https://demo.stackenterprise.co/api/v3",
+            "api_key": "original-key",
+            "team": "",
+        },
+    )
+    # Re-save with no api_key at all (e.g. only changing the team) — the
+    # previously stored key must survive, not be wiped.
+    r = client.post(
+        "/api/settings",
+        json={"base_url": "https://demo.stackenterprise.co/api/v3", "team": "new-team"},
+    )
+    assert r.status_code == 200
+    assert r.json()["has_api_key"] is True
+    assert _current_config["api_key"] == "original-key"
+    assert _current_config["team"] == "new-team"
+
+
+def test_post_settings_empty_string_api_key_keeps_existing_key(client: TestClient) -> None:
+    client.post(
+        "/api/settings",
+        json={
+            "base_url": "https://demo.stackenterprise.co/api/v3",
+            "api_key": "original-key",
+            "team": "",
+        },
+    )
+    r = client.post(
+        "/api/settings",
+        json={"base_url": "https://demo.stackenterprise.co/api/v3", "api_key": "", "team": "t2"},
+    )
+    assert r.json()["has_api_key"] is True
+    assert _current_config["api_key"] == "original-key"
+
+
 def test_test_connection_no_config_returns_unreachable(client: TestClient) -> None:
     r = client.get("/api/settings/test")
     assert r.status_code == 200

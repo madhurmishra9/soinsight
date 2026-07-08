@@ -1,11 +1,15 @@
 import { api } from './client'
 import type {
   AnalysisRequest,
+  AvailableTagsResponse,
   ConnectionTestResult,
   DismissRequest,
   DismissedItem,
   FetchRequest,
   InsightsSummary,
+  MetricBucket,
+  MetricQuestionRef,
+  MetricsSummary,
   PatternItem,
   QuestionRef,
   RemediationItem,
@@ -21,7 +25,7 @@ import type {
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 export const saveSettings = (payload: SettingsPayload) =>
-  api.post<{ status: string }>('/api/settings', payload)
+  api.post<SettingsPayload>('/api/settings', payload)
 
 export const testConnection = () =>
   api.get<ConnectionTestResult>('/api/settings/test')
@@ -45,6 +49,9 @@ export const getCoverage = (products: string[]) =>
 
 export const validateTags = (tags: string[]) =>
   api.get<TagValidation[]>('/api/questions/validate-tags', { params: { tags: tags.join(',') } })
+
+export const getAvailableTags = (search = '', limit = 1000) =>
+  api.get<AvailableTagsResponse>('/api/questions/available-tags', { params: { search, limit } })
 
 // ── Analysis ──────────────────────────────────────────────────────────────────
 
@@ -80,6 +87,11 @@ export const getPatterns = (product?: string, window?: number) =>
 
 export const getQuestions = (product: string, window: number, main: string, sub?: string, fromDate?: string, toDate?: string, noise?: boolean) =>
   api.get<QuestionRef[]>('/api/insights/questions', { params: { product, window, main, sub, from_date: fromDate, to_date: toDate, noise: noise || undefined } })
+
+export const getTechnicalQuestions = (product: string, window: number, technical: boolean, fromDate?: string, toDate?: string) =>
+  api.get<QuestionRef[]>('/api/insights/technical-questions', {
+    params: { product, window, technical, from_date: fromDate, to_date: toDate },
+  })
 
 export const reportUrl = (
   product: string,
@@ -138,6 +150,29 @@ export const getTrends = (
   product: string,
   opts: { recent_days?: number; baseline_days?: number; threshold?: number; min_recent?: number } = {},
 ) => api.get<TrendItem[]>('/api/insights/trends', { params: { product, ...opts } })
+
+// ── Metrics (pipeline health) ─────────────────────────────────────────────────
+
+export const getMetrics = (
+  tags: string[],
+  window: number,
+  fromDate?: string,
+  toDate?: string,
+) =>
+  api.get<MetricsSummary>('/api/insights/metrics', {
+    params: { tags: tags.join(','), window, from_date: fromDate, to_date: toDate },
+  })
+
+export const getMetricQuestions = (
+  bucket: MetricBucket,
+  tags: string[],
+  window: number,
+  fromDate?: string,
+  toDate?: string,
+) =>
+  api.get<MetricQuestionRef[]>('/api/insights/metrics/questions', {
+    params: { bucket, tags: tags.join(','), window, from_date: fromDate, to_date: toDate },
+  })
 
 // ── F3 Tag auto-discovery ─────────────────────────────────────────────────────
 
