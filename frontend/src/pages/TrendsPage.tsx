@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -11,19 +10,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { BookOpen, Loader, TrendingUp } from 'lucide-react'
+import { Loader, TrendingUp } from 'lucide-react'
 import { getTrends } from '../api'
 import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
+import { usePageState } from '../context/PageStateContext'
 import { cssVar, useThemeTick } from '../hooks/useTheme'
 import type { TrendItem } from '../types/api'
-
-const DEFAULTS = {
-  recent_days: 7,
-  baseline_days: 30,
-  threshold: 2.0,
-  min_recent: 2,
-}
 
 const MAX_CHART_ITEMS = 15
 
@@ -103,15 +96,22 @@ function TrendChart({ items }: { items: TrendItem[] }) {
 
 export function TrendsPage() {
   const { settings } = useApp()
-  const initialProduct =
-    (settings.default_tags || '').split(',').map((t) => t.trim()).filter(Boolean)[0] || ''
-
-  const [product, setProduct] = useState(initialProduct)
-  const [opts, setOpts] = useState(DEFAULTS)
-  const [items, setItems] = useState<TrendItem[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const { trends, patchTrends } = usePageState()
+  const { product, opts, items, loaded } = trends
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  // Seed the product field from default_tags the first time only, if empty.
+  useEffect(() => {
+    if (product || loaded) return
+    const initialProduct =
+      (settings.default_tags || '').split(',').map((t) => t.trim()).filter(Boolean)[0] || ''
+    if (initialProduct) patchTrends({ product: initialProduct })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.default_tags])
+
+  const setProduct = (p: string) => patchTrends({ product: p })
+  const setOpts = (o: typeof opts) => patchTrends({ opts: o })
 
   const run = async () => {
     if (!product.trim()) return
@@ -119,8 +119,7 @@ export function TrendsPage() {
     setErr(null)
     try {
       const r = await getTrends(product.trim(), opts)
-      setItems(r.data)
-      setLoaded(true)
+      patchTrends({ items: r.data, loaded: true })
     } catch (e) {
       setErr(errorMessage(e))
     } finally {
@@ -134,17 +133,10 @@ export function TrendsPage() {
   return (
     <>
       <div className="page-header">
-        <div className="flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <div>
-            <div className="page-title">Rising-volume detector</div>
-            <div className="page-subtitle">
-              Categories whose recent volume is at least <strong>{opts.threshold.toFixed(1)}×</strong> the
-              trailing baseline. Tune the windows and threshold below.
-            </div>
-          </div>
-          <Link to="/help#trends" className="btn btn-secondary btn-sm">
-            <BookOpen size={14} /> How this is calculated
-          </Link>
+        <div className="page-title">Rising-volume detector</div>
+        <div className="page-subtitle">
+          Categories whose recent volume is at least <strong>{opts.threshold.toFixed(1)}×</strong> the
+          trailing baseline. Tune the windows and threshold below.
         </div>
       </div>
 

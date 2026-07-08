@@ -26,13 +26,22 @@ from app.models import Answer, Classification, Pattern, Question, Remediation
 from app.settings import settings as app_settings
 from routers.dismissals import active_dismissed_keys
 from routers.settings import _current_config
-from services.aggregator import _compute_technical_ratio, _question_has_tag, _safe_tags
+from services.aggregator import (
+    _TECHNICAL_TAGS,
+    _compute_technical_ratio,
+    _question_has_tag,
+    _safe_tags,
+)
 
 log = structlog.get_logger("soinsight.routers.insights")
 
 router = APIRouter(prefix="/api/insights", tags=["insights"])
 
 _NOISE_MAIN = "Misuse / Noise"
+# Matches the Dashboard's "Sub-category frequency" chart, which shows the top 8
+# by volume — keeping both "top N" views on the Dashboard in lockstep so a
+# category that appears in the chart isn't inexplicably missing from the list.
+_TOP_ISSUES_LIMIT = 8
 
 
 # ─── Session dependency ────────────────────────────────────────────────────────
@@ -89,7 +98,7 @@ class InsightsSummary(BaseModel):
     total_questions: int                   # signal (non-noise) only
     noise_count: int                       # reported but excluded from total
     category_breakdown: list[CategoryBreakdownItem]
-    top_issues: list[CategoryBreakdownItem]   # top 5 by question count
+    top_issues: list[CategoryBreakdownItem]   # top _TOP_ISSUES_LIMIT by question count
     patterns: list[PatternItem]
     recommended_actions: list[str]         # unique, in pattern-frequency order
     # APPROXIMATE — question-tag heuristic; never a verified user attribute
@@ -366,7 +375,7 @@ def _build_summary(
         noise_count=len(noise_cls),
         noise_questions=noise_qs,
         category_breakdown=breakdown,
-        top_issues=breakdown[:5],
+        top_issues=breakdown[:_TOP_ISSUES_LIMIT],
         patterns=pattern_items,
         recommended_actions=recommended_actions,
         technical_ratio=tech_ratio,
@@ -828,6 +837,35 @@ async def get_questions(
         product, window, main, sub, session, from_date, to_date, noise,
         include_answers=True,
     )
+
+
+@router.get("/technical-questions", response_model=list[QuestionRef])
+async def get_technical_questions(
+    product: str = Query(..., description="Product/tag"),
+    window: int = Query(30, ge=1, le=365, description="Window in days"),
+    technical: bool = Query(True, description="True = technical bucket, False = non-technical"),
+    from_date: str | None = Query(None, description="YYYY-MM-DD"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD"),
+    session: Session = Depends(get_session),
+) -> list[QuestionRef]:
+    """Questions behind the Dashboard's Technical / Non-technical split stat.
+
+    APPROXIMATE, same heuristic as the stat itself: a question counts as
+    "technical" if it carries at least one tag from a fixed technical-tag list
+    (see services.aggregator._TECHNICAL_TAGS) — never a verified user attribute.
+    """
+    since, until = resolve_range(window, from_date, to_date)
+    all_qs = session.exec(
+        select(Question).where(Question.created_at >= since, Question.created_at <= until)
+    ).all()
+    questions = [q for q in all_qs if _question_has_tag(q, product)]
+
+    def _is_technical(q: Question) -> bool:
+        return any(t.lower() in _TECHNICAL_TAGS for t in _safe_tags(q))
+
+    selected = [q for q in questions if _is_technical(q) == technical]
+    selected.sort(key=lambda x: x.score, reverse=True)
+    return [_question_ref(q, session, include_answers=True) for q in selected]
 
 
 class UnclassifiedReason(BaseModel):

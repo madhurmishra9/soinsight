@@ -200,11 +200,43 @@ def test_summary_breakdown_sorted_descending(seeded_client: TestClient) -> None:
     assert bd[1]["question_count"] == 1
 
 
-def test_summary_top_issues_at_most_five(seeded_client: TestClient) -> None:
+def test_summary_top_issues_at_most_eight(seeded_client: TestClient) -> None:
     data = seeded_client.get("/api/insights/summary?product=python&window=30").json()
-    assert len(data["top_issues"]) <= 5
+    assert len(data["top_issues"]) <= 8
     # With only 2 categories, both appear
     assert len(data["top_issues"]) == 2
+
+
+def test_summary_top_issues_returns_up_to_eight_categories() -> None:
+    """Regression test: top_issues must expose as many categories as the
+    Dashboard's "top 8" sub-category frequency chart, not fewer."""
+    engine = _make_engine()
+    with Session(engine) as s:
+        qs = []
+        for i in range(10):
+            q = _make_question(1000 + i, ["ruby"], author_id=i)
+            qs.append(q)
+            s.add(q)
+        s.commit()
+        for q in qs:
+            s.refresh(q)
+        for i, q in enumerate(qs):
+            s.add(_make_cls(q.id, "Technical", f"Sub-category {i}"))
+        s.commit()
+
+    app = FastAPI()
+    app.include_router(insights_router)
+
+    def override() -> Any:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override
+    client = TestClient(app)
+
+    data = client.get("/api/insights/summary?product=ruby&window=30").json()
+    assert len(data["category_breakdown"]) == 10
+    assert len(data["top_issues"]) == 8
 
 
 def test_summary_patterns_from_db(seeded_client: TestClient) -> None:
@@ -359,6 +391,64 @@ def test_questions_excludes_noise(seeded_client: TestClient) -> None:
     r = seeded_client.get(
         "/api/insights/questions",
         params={"product": "python", "main": "Misuse / Noise", "sub": "Incorrect usage"},
+    )
+    assert r.json() == []
+
+
+# ─── GET /api/insights/technical-questions ────────────────────────────────────
+
+
+@pytest.fixture
+def technical_split_client() -> TestClient:
+    """
+    All tagged "acme" (recent):
+      q1 tags=[acme, python]   -> technical (python is in _TECHNICAL_TAGS)
+      q2 tags=[acme, docker]   -> technical
+      q3 tags=[acme, billing]  -> non-technical (billing isn't a technical tag)
+      q4 tags=[acme, pricing]  -> non-technical
+    """
+    engine = _make_engine()
+    with Session(engine) as s:
+        for so_id, tags in [
+            (301, ["acme", "python"]),
+            (302, ["acme", "docker"]),
+            (303, ["acme", "billing"]),
+            (304, ["acme", "pricing"]),
+        ]:
+            s.add(_make_question(so_id, tags))
+        s.commit()
+
+    app = FastAPI()
+    app.include_router(insights_router)
+
+    def override() -> Any:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override
+    return TestClient(app)
+
+
+def test_technical_questions_bucket_true(technical_split_client: TestClient) -> None:
+    r = technical_split_client.get(
+        "/api/insights/technical-questions",
+        params={"product": "acme", "window": 30, "technical": True},
+    )
+    assert r.status_code == 200
+    assert {q["so_id"] for q in r.json()} == {301, 302}
+
+
+def test_technical_questions_bucket_false(technical_split_client: TestClient) -> None:
+    r = technical_split_client.get(
+        "/api/insights/technical-questions",
+        params={"product": "acme", "window": 30, "technical": False},
+    )
+    assert {q["so_id"] for q in r.json()} == {303, 304}
+
+
+def test_technical_questions_scoped_to_product(technical_split_client: TestClient) -> None:
+    r = technical_split_client.get(
+        "/api/insights/technical-questions", params={"product": "nonexistent", "window": 30}
     )
     assert r.json() == []
 

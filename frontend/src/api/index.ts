@@ -25,7 +25,7 @@ import type {
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 export const saveSettings = (payload: SettingsPayload) =>
-  api.post<{ status: string }>('/api/settings', payload)
+  api.post<SettingsPayload>('/api/settings', payload)
 
 export const testConnection = () =>
   api.get<ConnectionTestResult>('/api/settings/test')
@@ -87,6 +87,11 @@ export const getPatterns = (product?: string, window?: number) =>
 
 export const getQuestions = (product: string, window: number, main: string, sub?: string, fromDate?: string, toDate?: string, noise?: boolean) =>
   api.get<QuestionRef[]>('/api/insights/questions', { params: { product, window, main, sub, from_date: fromDate, to_date: toDate, noise: noise || undefined } })
+
+export const getTechnicalQuestions = (product: string, window: number, technical: boolean, fromDate?: string, toDate?: string) =>
+  api.get<QuestionRef[]>('/api/insights/technical-questions', {
+    params: { product, window, technical, from_date: fromDate, to_date: toDate },
+  })
 
 export const reportUrl = (
   product: string,

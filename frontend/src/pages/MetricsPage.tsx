@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
   Check,
@@ -14,7 +13,8 @@ import {
 import { getMetricQuestions, getMetrics } from '../api'
 import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
-import type { MetricBucket, MetricQuestionRef, MetricsSummary } from '../types/api'
+import { usePageState } from '../context/PageStateContext'
+import type { MetricBucket, MetricQuestionRef } from '../types/api'
 
 const WINDOWS = [7, 14, 30, 60, 90]
 
@@ -121,17 +121,22 @@ function MetricsDrawer({
 
 export function MetricsPage() {
   const { knownProducts } = useApp()
-  const [selectedTags, setSelectedTags] = useState<string[]>([])
-  const [windowDays, setWindowDays] = useState(30)
-  const [fromDate, setFromDate] = useState('')
-  const [toDate, setToDate] = useState('')
-  const [data, setData] = useState<MetricsSummary | null>(null)
+  const { metrics, patchMetrics } = usePageState()
+  const { selectedTags, windowDays, fromDate, toDate, data } = metrics
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [drill, setDrill] = useState<MetricDrill | null>(null)
 
+  const setWindowDays = (w: number) => patchMetrics({ windowDays: w })
+  const setFromDate = (d: string) => patchMetrics({ fromDate: d })
+  const setToDate = (d: string) => patchMetrics({ toDate: d })
+
   const toggleTag = (tag: string) => {
-    setSelectedTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]))
+    patchMetrics({
+      selectedTags: selectedTags.includes(tag)
+        ? selectedTags.filter((t) => t !== tag)
+        : [...selectedTags, tag],
+    })
   }
 
   const load = async () => {
@@ -139,7 +144,7 @@ export function MetricsPage() {
     setError(null)
     try {
       const res = await getMetrics(selectedTags, windowDays, fromDate || undefined, toDate || undefined)
-      setData(res.data)
+      patchMetrics({ data: res.data })
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -160,8 +165,7 @@ export function MetricsPage() {
         <div className="page-title">Metrics</div>
         <div className="page-subtitle">
           Pipeline health for a date range — how much was fetched, answered, and actually
-          run through Analysis. Click any number to see the questions behind it. See the{' '}
-          <Link to="/help#metrics">user guide</Link> for how each number is derived.
+          run through Analysis. Click any number to see the questions behind it.
         </div>
       </div>
 

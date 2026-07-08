@@ -16,7 +16,7 @@ Internal **Stack Overflow Enterprise** intelligence platform. SOInsight ingests 
 |---|---|
 | [docs/WHY_SOINSIGHT.md](docs/WHY_SOINSIGHT.md) | What SOInsight is and why you need it: the problem it solves, what it provides, how it compares to native Stack Overflow Enterprise analytics, other benefits, and honest limitations |
 | [docs/BENEFITS.md](docs/BENEFITS.md) | Why SOInsight is automated: the one-command launcher, scheduled auto-fetch, the incremental/idempotent pipeline, local-first posture, and who benefits |
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | First-time setup, daily use, the four pages, time selection, drill-downs, exports, model selection, performance expectations, troubleshooting |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | First-time setup, daily use, every tab (Settings, Fetch, Analysis, Dashboard, Rising trends, Metrics, Tag suggestions, Snoozed, Run history), drill-downs, exports, model selection, performance expectations, troubleshooting |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component diagram, data flow (ingestion → classification → aggregation → insights), date handling, key tables, taxonomy |
 | [docs/SECURITY.md](docs/SECURITY.md) | Data handling, secrets, network posture, auth model, dependency hygiene, known limitations |
 
@@ -117,19 +117,21 @@ Settings are persistent: they load from `backend/.env` on startup and survive re
 
 ## Analysis workflow
 
-Work through the four pages in order (details and screenshots-level walkthrough in the [User Guide](docs/USER_GUIDE.md)):
+Work through the core workflow in order (full walkthrough of every tab, including Rising trends, Metrics, Tag suggestions, Snoozed, and Run history, in the [User Guide](docs/USER_GUIDE.md)):
 
-1. **Settings** — paste your SO Enterprise URL and API key, click **Test Connection**, and pick a classification model from the models installed in Ollama.
-2. **Fetch Questions** — pick product tags and a time window, click **Fetch**. Progress streams live (SSE). **Incremental by default**: only questions newer than the last fetch per tag are downloaded, so re-runs take seconds. Deduplicated by `so_id` — re-running is always safe.
+1. **Settings** — paste your SO Enterprise URL and API key, click **Test Connection**, and pick a classification model from the models installed in Ollama. Re-saving other fields never forces you to re-paste the key.
+2. **Fetch Questions** — pick product tags (via the searchable tag dropdown, populated live from your instance) and a time window, click **Fetch**. Progress streams live (SSE). **Incremental by default**: only questions newer than the last fetch per tag are downloaded, so re-runs take seconds. Deduplicated by `so_id` — re-running is always safe.
 3. **Analysis** — classifies every fetched question into exactly **one main + one sub-category** from the fixed taxonomy, then detects patterns. Already-classified questions are skipped automatically.
-4. **Dashboard** — category/sub-category charts, top issues, key patterns, noise volume, and the technical/non-technical split (a tag heuristic, labelled APPROXIMATE). Every bar, row, and card drills down to the underlying questions with links back to your SO instance. Export **Markdown**, **JSON**, or **PDF** reports from the top right (PDF tables and prose paginate cleanly across pages).
+4. **Dashboard** — category/sub-category charts, top issues, key patterns, noise volume, and the clickable technical/non-technical split (a tag heuristic, labelled APPROXIMATE). Every bar, row, and card drills down to the underlying questions with links back to your SO instance. Export **Markdown**, **JSON**, or **PDF** reports from the top right (PDF tables and prose paginate cleanly across pages).
+5. **Metrics** — pipeline-health view: fetched/answered/classified counts, engagement stats (accepted-answer rate, time to first answer, distinct askers), all clickable down to the underlying questions.
 
 Key behaviors:
 
 - **Fixed taxonomy** — 8 main categories (Product, Documentation, Operational, Awareness, Technical, Security/Compliance, Adoption/Migration, Misuse/Noise), each with fixed sub-categories. The classifier is constrained to this enum; invalid LLM output retries once, then falls back to Misuse/Noise.
 - **Pattern threshold** — a cluster is a pattern only at **≥ 3 questions from ≥ 2 distinct users**. Below the threshold the dashboard explains why and lists emerging signals — it never lowers the bar or invents a pattern.
 - **Recommendations are text only** — the agent never writes to Confluence, Backstage, Jira, or ServiceNow.
-- **Custom date ranges** — Fetch, Analysis, and the Dashboard accept `from_date`/`to_date` (`YYYY-MM-DD`); explicit dates override the preset 7/14/30/60/90-day windows.
+- **Custom date ranges** — Fetch, Analysis, Dashboard, and Metrics accept `from_date`/`to_date` (`YYYY-MM-DD`); explicit dates override the preset 7/14/30/60/90-day windows.
+- **State persists across tabs** — filters and last-loaded results for every page survive navigating away and back; only an explicit reload/re-fetch or a full browser refresh changes them.
 
 ---
 
@@ -290,7 +292,7 @@ Full component diagram, data flow, and table reference: [docs/ARCHITECTURE.md](d
 | Settings blank after refresh | `backend/.env` missing — re-run the launcher, then restart the backend |
 | Port 8000 already in use | A previous instance is still running — stop it (`Get-NetTCPConnection -LocalPort 8000` on Windows to find the PID) |
 
-More in the [User Guide troubleshooting table](docs/USER_GUIDE.md#5-troubleshooting-quick-table).
+More in the [User Guide troubleshooting table](docs/USER_GUIDE.md#16-troubleshooting).
 
 ---
 

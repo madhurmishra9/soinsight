@@ -1,46 +1,74 @@
-import { useState, useEffect } from 'react'
-import { Eye, EyeOff, CheckCircle, XCircle, Loader } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Eye, EyeOff, CheckCircle, ShieldCheck, XCircle, Loader } from 'lucide-react'
 import { saveSettings, testConnection, getSettings, getOllamaModels } from '../api'
 import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
-import type { ConnectionTestResult } from '../types/api'
+import { usePageState } from '../context/PageStateContext'
 
 export function SettingsPage() {
   const { settings, setSettings, setScopes } = useApp()
-  const [form, setForm] = useState(settings)
+  const { settingsDraft, patchSettingsDraft } = usePageState()
   const [showKey, setShowKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
-  const [testError, setTestError] = useState<string | null>(null)
   const [models, setModels] = useState<string[]>([])
 
+  const { form, saveMsg, testResult, testError } = settingsDraft
+
+  // Seed the draft from the backend + app context only the first time this
+  // session touches Settings — once a draft exists, keep it exactly as the
+  // user left it (including unsaved edits) when they come back from another tab.
   useEffect(() => {
     getOllamaModels().then((r) => setModels(r.data.models)).catch(() => {})
+    if (form) return
     getSettings()
-      .then((r) => setForm((f) => ({
-        ...f,
-        base_url: r.data.base_url,
-        team: r.data.team ?? '',
-        ollama_url: r.data.ollama_url || f.ollama_url,
-        ollama_model: r.data.ollama_model || f.ollama_model || '',
-      })))
-      .catch(() => {})
+      .then((r) => {
+        patchSettingsDraft({
+          form: {
+            ...settings,
+            base_url: r.data.base_url,
+            team: r.data.team ?? '',
+            ollama_url: r.data.ollama_url || settings.ollama_url,
+            ollama_model: r.data.ollama_model || settings.ollama_model || '',
+            has_api_key: r.data.has_api_key,
+          },
+        })
+      })
+      .catch(() => patchSettingsDraft({ form: settings }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  if (!form) {
+    return (
+      <>
+        <div className="page-header">
+          <div className="page-title">Settings</div>
+          <div className="page-subtitle">Configure your Stack Overflow Enterprise connection</div>
+        </div>
+        <div className="card" style={{ maxWidth: 620 }}>
+          <div className="text-muted text-sm">Loading…</div>
+        </div>
+      </>
+    )
+  }
+
+  const setForm = (next: typeof form) => patchSettingsDraft({ form: next })
   const field = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm((f) => ({ ...f, [key]: e.target.value }))
+    setForm({ ...form, [key]: e.target.value })
 
   const handleSave = async () => {
     setSaving(true)
-    setSaveMsg(null)
+    patchSettingsDraft({ saveMsg: null })
     try {
-      await saveSettings(form)
-      setSettings(form)
-      setSaveMsg({ ok: true, text: 'Settings saved.' })
+      const res = await saveSettings(form)
+      const updated = { ...form, has_api_key: res.data.has_api_key, api_key: '' }
+      setForm(updated)
+      setSettings({ ...settings, ...form })
+      patchSettingsDraft({
+        saveMsg: { ok: true, text: res.data.has_api_key ? 'Settings saved — API key is set.' : 'Settings saved.' },
+      })
     } catch (err) {
-      setSaveMsg({ ok: false, text: errorMessage(err) })
+      patchSettingsDraft({ saveMsg: { ok: false, text: errorMessage(err) } })
     } finally {
       setSaving(false)
     }
@@ -48,21 +76,21 @@ export function SettingsPage() {
 
   const handleTest = async () => {
     setTesting(true)
-    setTestResult(null)
-    setTestError(null)
+    patchSettingsDraft({ testResult: null, testError: null })
     // Save first so the backend uses current values
     try {
-      await saveSettings(form)
-      setSettings(form)
+      const res = await saveSettings(form)
+      setForm({ ...form, has_api_key: res.data.has_api_key, api_key: '' })
+      setSettings({ ...settings, ...form })
     } catch {
       // continue even if save fails — test with whatever backend has
     }
     try {
       const res = await testConnection()
-      setTestResult(res.data)
+      patchSettingsDraft({ testResult: res.data })
       if (res.data.scopes) setScopes(res.data.scopes)
     } catch (err) {
-      setTestError(errorMessage(err))
+      patchSettingsDraft({ testError: errorMessage(err) })
     } finally {
       setTesting(false)
     }
@@ -91,11 +119,16 @@ export function SettingsPage() {
 
         <div className="form-group">
           <label>API Key <span className="hint">(stored in memory only)</span></label>
+          {form.has_api_key && (
+            <div className="text-sm" style={{ color: 'var(--success)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              <ShieldCheck size={13} /> A key is currently saved on the server — leave this blank to keep it.
+            </div>
+          )}
           <div className="pw-wrap">
             <input
               className="input"
               type={showKey ? 'text' : 'password'}
-              placeholder="••••••••••••••••"
+              placeholder={form.has_api_key ? 'Leave blank to keep the saved key' : '••••••••••••••••'}
               value={form.api_key}
               onChange={field('api_key')}
               autoComplete="off"
@@ -131,7 +164,7 @@ export function SettingsPage() {
               <select
                 className="input"
                 value={form.ollama_model || ''}
-                onChange={(e) => setForm((f) => ({ ...f, ollama_model: e.target.value }))}
+                onChange={(e) => setForm({ ...form, ollama_model: e.target.value })}
               >
                 <option value="">— keep current —</option>
                 {models.map((m) => (
@@ -143,7 +176,7 @@ export function SettingsPage() {
                 className="input"
                 placeholder="e.g. llama3.1:8b"
                 value={form.ollama_model || ''}
-                onChange={(e) => setForm((f) => ({ ...f, ollama_model: e.target.value }))}
+                onChange={(e) => setForm({ ...form, ollama_model: e.target.value })}
               />
             )}
           </div>

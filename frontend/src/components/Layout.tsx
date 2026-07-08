@@ -2,7 +2,6 @@ import { NavLink, Outlet } from 'react-router-dom'
 import {
   BarChart2,
   BellOff,
-  BookOpen,
   Download,
   Gauge,
   History,
@@ -57,9 +56,6 @@ export function Layout() {
         <div className="sidebar-section" style={{ marginTop: 8 }}>Operations</div>
         <NavLink to="/runs" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <History size={16} /> Run history
-        </NavLink>
-        <NavLink to="/help" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-          <BookOpen size={16} /> User guide
         </NavLink>
 
         <button className="theme-toggle" onClick={toggle} title="Toggle theme">

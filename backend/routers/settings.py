@@ -24,7 +24,10 @@ class OllamaModelsResponse(BaseModel):
 
 class SOConfig(BaseModel):
     base_url: str
-    api_key: SecretStr
+    # Optional: a blank/omitted api_key means "keep whatever is already stored" —
+    # the UI never re-populates this field with a saved key, so requiring it on
+    # every save would force a re-paste any time another field is edited.
+    api_key: SecretStr | None = None
     team: str = ""
     ollama_url: str = ""
     ollama_model: str = ""
@@ -36,7 +39,8 @@ class SOConfigResponse(BaseModel):
     ollama_url: str = ""
     ollama_model: str = ""
     default_tags: str = ""
-    # api_key intentionally omitted — never echo secrets
+    has_api_key: bool = False
+    # the api_key value itself is intentionally omitted — never echo secrets
 
 
 class TestConnectionResponse(BaseModel):
@@ -54,6 +58,7 @@ async def get_config() -> SOConfigResponse:
         ollama_url=_current_config.get("ollama_url", env_settings.ollama_url),
         ollama_model=env_settings.ollama_model,
         default_tags=env_settings.default_tags,
+        has_api_key=bool(_current_config.get("api_key")),
     )
 
 
@@ -61,10 +66,13 @@ async def get_config() -> SOConfigResponse:
 async def store_config(body: SOConfig) -> SOConfigResponse:
     """
     Persist SO connection settings for this session.
-    The api_key is stored in memory only and never logged or returned.
+    The api_key is stored in memory only and never logged or returned. A blank
+    or omitted api_key keeps whatever key is already stored, so re-saving other
+    fields (team, Ollama URL, ...) never forces the key to be re-entered.
     """
     _current_config["base_url"] = body.base_url
-    _current_config["api_key"] = body.api_key.get_secret_value()
+    if body.api_key is not None and body.api_key.get_secret_value():
+        _current_config["api_key"] = body.api_key.get_secret_value()
     _current_config["team"] = body.team
     if body.ollama_url:
         _current_config["ollama_url"] = body.ollama_url
@@ -78,6 +86,7 @@ async def store_config(body: SOConfig) -> SOConfigResponse:
         ollama_url=_current_config.get("ollama_url", ""),
         ollama_model=env_settings.ollama_model,
         default_tags=env_settings.default_tags,
+        has_api_key=bool(_current_config.get("api_key")),
     )
 
 

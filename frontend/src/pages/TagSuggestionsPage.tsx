@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Lightbulb, Loader } from 'lucide-react'
 import { getTagSuggestions } from '../api'
 import { errorMessage } from '../api/client'
 import { useApp } from '../context/AppContext'
-import type { TagSuggestion } from '../types/api'
+import { usePageState } from '../context/PageStateContext'
 
 function coverageBadge(ratio: number): string {
   if (ratio >= 0.5) return 'badge badge-green'
@@ -13,21 +13,28 @@ function coverageBadge(ratio: number): string {
 
 export function TagSuggestionsPage() {
   const { settings, knownProducts } = useApp()
-  const seed = [
-    ...new Set(
-      [...(settings.default_tags || '').split(','), ...knownProducts]
-        .map((t) => t.trim())
-        .filter(Boolean),
-    ),
-  ].join(', ')
-
-  const [tracked, setTracked] = useState(seed)
-  const [minInstance, setMinInstance] = useState(25)
-  const [limit, setLimit] = useState(20)
-  const [items, setItems] = useState<TagSuggestion[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const { tagSuggestions, patchTagSuggestions } = usePageState()
+  const { tracked, minInstance, limit, items, loaded } = tagSuggestions
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  // Seed tracked tags from settings/known-products the first time only, if empty.
+  useEffect(() => {
+    if (tracked || loaded) return
+    const seed = [
+      ...new Set(
+        [...(settings.default_tags || '').split(','), ...knownProducts]
+          .map((t) => t.trim())
+          .filter(Boolean),
+      ),
+    ].join(', ')
+    if (seed) patchTagSuggestions({ tracked: seed })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.default_tags, knownProducts])
+
+  const setTracked = (v: string) => patchTagSuggestions({ tracked: v })
+  const setMinInstance = (v: number) => patchTagSuggestions({ minInstance: v })
+  const setLimit = (v: number) => patchTagSuggestions({ limit: v })
 
   const run = async () => {
     setLoading(true)
@@ -38,8 +45,7 @@ export function TagSuggestionsPage() {
         min_instance_count: minInstance,
         limit,
       })
-      setItems(r.data)
-      setLoaded(true)
+      patchTagSuggestions({ items: r.data, loaded: true })
     } catch (e) {
       setErr(errorMessage(e))
     } finally {

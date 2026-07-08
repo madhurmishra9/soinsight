@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, X } from 'lucide-react'
-import { getQuestions } from '../api'
+import { getQuestions, getTechnicalQuestions } from '../api'
 import type { QuestionRef } from '../types/api'
 
-export type Drill = { main: string; sub?: string; label: string; noise?: boolean }
+export type Drill = {
+  main?: string
+  sub?: string
+  label: string
+  noise?: boolean
+  /** When set, the drawer lists the Technical/Non-technical split instead of a category. */
+  technical?: boolean
+}
 
 interface QuestionDrawerProps {
   target: Drill | null
@@ -74,7 +81,10 @@ export function QuestionDrawer({ target, product, windowDays, onClose, fromDate,
     if (!target) return
     setLoading(true)
     setItems(null)
-    getQuestions(product, windowDays, target.main, target.sub, fromDate, toDate, noise || target.noise)
+    const req = target.technical !== undefined
+      ? getTechnicalQuestions(product, windowDays, target.technical, fromDate, toDate)
+      : getQuestions(product, windowDays, target.main ?? '', target.sub, fromDate, toDate, noise || target.noise)
+    req
       .then((r) => setItems(r.data))
       .catch(() => setItems([]))
       .finally(() => setLoading(false))

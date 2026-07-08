@@ -126,6 +126,7 @@ export interface SettingsPayload {
   ollama_url: string
   ollama_model?: string
   default_tags?: string
+  has_api_key?: boolean
 }
 
 export interface FetchRequest {
