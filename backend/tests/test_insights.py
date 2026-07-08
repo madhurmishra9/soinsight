@@ -363,6 +363,65 @@ def test_questions_excludes_noise(seeded_client: TestClient) -> None:
     assert r.json() == []
 
 
+# ─── GET /api/insights/metrics ────────────────────────────────────────────────
+
+
+def test_metrics_no_tag_filter_covers_all_recent_questions(seeded_client: TestClient) -> None:
+    # q1-5 (python) + q7 (java) are in-window; q6 (old python) is not.
+    r = seeded_client.get("/api/insights/metrics?window=30")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_questions"] == 6
+    assert data["classified"] == 5     # q1-5 have classification rows
+    assert data["unclassified"] == 1   # q7 (java) was never analysed
+    assert data["unclassified_reasons"][0]["count"] == 1
+    assert "java" in data["tags"] and "python" in data["tags"]
+
+
+def test_metrics_filters_by_tag(seeded_client: TestClient) -> None:
+    r = seeded_client.get("/api/insights/metrics?tags=java&window=30")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_questions"] == 1
+    assert data["classified"] == 0
+    assert data["unclassified"] == 1
+    assert data["tags"] == ["java"]
+
+
+def test_metrics_python_tag_fully_classified(seeded_client: TestClient) -> None:
+    r = seeded_client.get("/api/insights/metrics?tags=python&window=30")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_questions"] == 5
+    assert data["classified"] == 5
+    assert data["unclassified"] == 0
+    assert data["unclassified_reasons"] == []
+
+
+def test_metrics_answered_unanswered_split(seeded_client: TestClient) -> None:
+    r = seeded_client.get("/api/insights/metrics?tags=python&window=30")
+    data = r.json()
+    # Fixture questions all have answer_count=0.
+    assert data["answered"] == 0
+    assert data["unanswered"] == data["total_questions"]
+
+
+def test_metrics_by_tag_breakdown_shape(seeded_client: TestClient) -> None:
+    r = seeded_client.get("/api/insights/metrics?window=30")
+    data = r.json()
+    by_tag = {row["tag"]: row for row in data["by_tag"]}
+    assert by_tag["python"]["total_questions"] == 5
+    assert by_tag["java"]["total_questions"] == 1
+    assert by_tag["docker"]["total_questions"] == 1  # q1 also tagged docker
+
+
+def test_metrics_window_excludes_old_questions(seeded_client: TestClient) -> None:
+    r = seeded_client.get("/api/insights/metrics?tags=python&window=30")
+    data = r.json()
+    # q6 (45 days old, python) must not be counted.
+    assert data["total_questions"] == 5
+
+
 # ─── GET /api/insights/report ─────────────────────────────────────────────────
 
 

@@ -326,6 +326,7 @@ function RemediationCard({ item }: { item: RemediationItem }) {
                     {item.evidence_questions.map((q) => (
                       <li key={q.so_id}>
                         {q.url ? <a href={q.url} target="_blank" rel="noreferrer">{q.title}</a> : q.title}
+                        {' '}<span className="muted">[Q#{q.so_id}]</span>
                       </li>
                     ))}
                   </ul>
@@ -333,7 +334,7 @@ function RemediationCard({ item }: { item: RemediationItem }) {
                 {item.evidence_answers.map((a) => (
                   <div key={a.so_id} style={{ borderLeft: '2px solid var(--border)', paddingLeft: 10, marginBottom: 6 }}>
                     <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                      {a.is_accepted && <Check size={10} />} answer to #{a.question_so_id} · score {a.score}
+                      {a.is_accepted && <Check size={10} />} answer [A#{a.so_id}] to question [Q#{a.question_so_id}] · score {a.score}
                     </span>
                     <div style={{ whiteSpace: 'pre-wrap' }}>{a.snippet}</div>
                   </div>

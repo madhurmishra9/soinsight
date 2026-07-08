@@ -34,6 +34,17 @@ export interface TagValidation {
   question_count: number | null
 }
 
+export interface AvailableTag {
+  tag: string
+  question_count: number
+}
+
+export interface AvailableTagsResponse {
+  ok: boolean
+  tags: AvailableTag[]
+  total: number
+}
+
 export interface TagCoverage {
   tag: string
   question_count: number
@@ -189,4 +200,34 @@ export interface TagSuggestion {
   instance_count: number
   local_count: number
   coverage_ratio: number
+}
+
+// ── Metrics (pipeline health) ─────────────────────────────────────────────────
+
+export interface UnclassifiedReason {
+  reason: string
+  count: number
+}
+
+export interface TagMetrics {
+  tag: string
+  total_questions: number
+  answered: number
+  unanswered: number
+  classified: number
+  unclassified: number
+}
+
+export interface MetricsSummary {
+  window_days: number
+  from_date: string | null
+  to_date: string | null
+  tags: string[]
+  total_questions: number
+  answered: number
+  unanswered: number
+  classified: number
+  unclassified: number
+  unclassified_reasons: UnclassifiedReason[]
+  by_tag: TagMetrics[]
 }

@@ -144,9 +144,12 @@ def _breakdown_table(items: list[dict[str, Any]]) -> Table:
 
 
 def _questions_table(questions: list[dict[str, Any]]) -> Table:
-    rows: list[list[Any]] = [[_cell("Title"), _cell("Score"), _cell("Views"), _cell("Answers")]]
+    rows: list[list[Any]] = [
+        [_cell("Question ID"), _cell("Title"), _cell("Score"), _cell("Views"), _cell("Answers")]
+    ]
     for q in questions:
         rows.append([
+            _cell(f"Q#{q.get('so_id', '')}"),
             _link_cell(q.get("title", ""), q.get("url")),
             _cell(str(q.get("score", 0))),
             _cell(str(q.get("view_count", 0))),
@@ -154,7 +157,7 @@ def _questions_table(questions: list[dict[str, Any]]) -> Table:
         ])
     table = Table(
         rows,
-        colWidths=[4.5 * inch, 0.6 * inch, 0.7 * inch, 0.7 * inch],
+        colWidths=[0.8 * inch, 3.7 * inch, 0.6 * inch, 0.7 * inch, 0.7 * inch],
         repeatRows=1,
     )
     table.setStyle(_TABLE_STYLE)
@@ -259,13 +262,14 @@ def _build_story(summary: dict[str, Any], remediations: list[dict[str, Any]]) ->
                 for q in ev_q:
                     story.append(_para(
                         f"• <a href='{_esc(q.get('url') or '')}' color='#1d4ed8'>"
-                        f"{_esc(q.get('title') or '')}</a>",
+                        f"{_esc(q.get('title') or '')}</a> [Q#{q.get('so_id', '')}]",
                     ))
             ev_a = r.get("evidence_answers") or []
             for a in ev_a:
                 tag = "accepted" if a.get("is_accepted") else f"score {a.get('score', 0)}"
+                a_id, q_id = a.get("so_id", ""), a.get("question_so_id", 0)
                 story.append(_para(
-                    f"  answer to #{a.get('question_so_id', 0)} ({tag}): "
+                    f"  [A#{a_id}] answer to [Q#{q_id}] ({tag}): "
                     f"{_esc(a.get('snippet') or '')}",
                     _MUTED,
                 ))

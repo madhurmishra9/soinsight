@@ -158,6 +158,44 @@ async def _load_tag_index(team: str | None, force: bool = False) -> dict[str, An
     return cached or {"tags": {}, "at": utcnow(), "ok": False}
 
 
+class AvailableTag(BaseModel):
+    tag: str
+    question_count: int
+
+
+class AvailableTagsResponse(BaseModel):
+    ok: bool                 # False when the instance's tag list could not be fetched
+    tags: list[AvailableTag]
+    total: int                # total tags in the index, before the `search` filter
+
+
+@router.get("/available-tags", response_model=AvailableTagsResponse)
+async def available_tags(
+    search: str = Query("", description="Case-insensitive substring filter on tag name"),
+    limit: int = Query(1000, ge=1, le=20000, description="Max tags to return, most-used first"),
+    refresh: bool = Query(False, description="Force-refresh the cached tag list from SO"),
+) -> AvailableTagsResponse:
+    """All tags known on the configured Stack Overflow instance, for the Fetch page's
+    tag picker — populated as soon as a connection is established (this primes the
+    same cached index used by /validate-tags), so users pick from real tags instead
+    of typing them blind.
+    """
+    team: str | None = _current_config.get("team") or settings.so_team or None
+    index = await _load_tag_index(team, force=refresh)
+
+    names = index["tags"]
+    needle = search.strip().lower()
+    items = [(n, c) for n, c in names.items() if not needle or needle in n]
+    items.sort(key=lambda x: x[1], reverse=True)
+    items = items[:limit]
+
+    return AvailableTagsResponse(
+        ok=index["ok"],
+        tags=[AvailableTag(tag=n, question_count=c) for n, c in items],
+        total=len(names),
+    )
+
+
 @router.get("/validate-tags", response_model=list[TagValidation])
 async def validate_tags(
     tags: str = Query("", description="Comma-separated tags to validate against the instance"),

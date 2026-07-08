@@ -11,6 +11,8 @@ import { RunsPage } from './pages/RunsPage'
 import { TrendsPage } from './pages/TrendsPage'
 import { DismissedPatternsPage } from './pages/DismissedPatternsPage'
 import { TagSuggestionsPage } from './pages/TagSuggestionsPage'
+import { MetricsPage } from './pages/MetricsPage'
+import { HelpPage } from './pages/HelpPage'
 
 export default function App() {
   return (
@@ -42,6 +44,10 @@ export default function App() {
                   element={<ErrorBoundary><TrendsPage /></ErrorBoundary>}
                 />
                 <Route
+                  path="/metrics"
+                  element={<ErrorBoundary><MetricsPage /></ErrorBoundary>}
+                />
+                <Route
                   path="/tag-suggestions"
                   element={<ErrorBoundary><TagSuggestionsPage /></ErrorBoundary>}
                 />
@@ -52,6 +58,10 @@ export default function App() {
                 <Route
                   path="/runs"
                   element={<ErrorBoundary><RunsPage /></ErrorBoundary>}
+                />
+                <Route
+                  path="/help"
+                  element={<ErrorBoundary><HelpPage /></ErrorBoundary>}
                 />
               </Route>
             </Routes>

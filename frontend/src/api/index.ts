@@ -1,11 +1,13 @@
 import { api } from './client'
 import type {
   AnalysisRequest,
+  AvailableTagsResponse,
   ConnectionTestResult,
   DismissRequest,
   DismissedItem,
   FetchRequest,
   InsightsSummary,
+  MetricsSummary,
   PatternItem,
   QuestionRef,
   RemediationItem,
@@ -45,6 +47,9 @@ export const getCoverage = (products: string[]) =>
 
 export const validateTags = (tags: string[]) =>
   api.get<TagValidation[]>('/api/questions/validate-tags', { params: { tags: tags.join(',') } })
+
+export const getAvailableTags = (search = '', limit = 1000) =>
+  api.get<AvailableTagsResponse>('/api/questions/available-tags', { params: { search, limit } })
 
 // ── Analysis ──────────────────────────────────────────────────────────────────
 
@@ -138,6 +143,18 @@ export const getTrends = (
   product: string,
   opts: { recent_days?: number; baseline_days?: number; threshold?: number; min_recent?: number } = {},
 ) => api.get<TrendItem[]>('/api/insights/trends', { params: { product, ...opts } })
+
+// ── Metrics (pipeline health) ─────────────────────────────────────────────────
+
+export const getMetrics = (
+  tags: string[],
+  window: number,
+  fromDate?: string,
+  toDate?: string,
+) =>
+  api.get<MetricsSummary>('/api/insights/metrics', {
+    params: { tags: tags.join(','), window, from_date: fromDate, to_date: toDate },
+  })
 
 // ── F3 Tag auto-discovery ─────────────────────────────────────────────────────
 

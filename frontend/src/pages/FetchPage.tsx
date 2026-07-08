@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertCircle, Download, Loader, Plus, X } from 'lucide-react'
-import { getCoverage, validateTags } from '../api'
+import { AlertCircle, ChevronDown, Download, Loader, Plus, RefreshCw, Search, WifiOff, X } from 'lucide-react'
+import { getAvailableTags, getCoverage, validateTags } from '../api'
 import { useApp } from '../context/AppContext'
 import { useRuns } from '../context/RunsContext'
-import type { TagCoverage, TagValidation } from '../types/api'
+import type { AvailableTag, TagCoverage, TagValidation } from '../types/api'
 
 const WINDOWS = [7, 14, 30, 60, 90]
 type TagStatus = TagValidation['status']
@@ -15,6 +15,133 @@ function fmtDate(iso: string | null): string {
   return d.toLocaleString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   })
+}
+
+/**
+ * Dropdown, search-as-you-type multi-select over every tag the connected Stack
+ * Overflow instance reports (populated as soon as the instance is reachable —
+ * see GET /api/questions/available-tags). Falls back to a plain notice when the
+ * instance can't be reached, so manual chip entry below still works.
+ */
+function TagDropdownPicker({
+  selected, onToggle, disabled,
+}: {
+  selected: string[]
+  onToggle: (tag: string) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [tags, setTags] = useState<AvailableTag[]>([])
+  const [ok, setOk] = useState<boolean | null>(null)
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  const load = (refresh = false) => {
+    setLoading(true)
+    getAvailableTags('', 5000)
+      .then((r) => {
+        setTags(r.data.tags)
+        setOk(r.data.ok)
+        setTotal(r.data.total)
+      })
+      .catch(() => setOk(false))
+      .finally(() => setLoading(false))
+    void refresh
+  }
+
+  // Fetch as soon as this page mounts — i.e. as soon as a connection is configured —
+  // rather than waiting for the user to open the dropdown.
+  useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const onClick = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [open])
+
+  const filtered = tags.filter((t) => t.tag.includes(search.trim().toLowerCase()))
+
+  return (
+    <div className="tag-picker" ref={boxRef}>
+      <button
+        type="button"
+        className="btn btn-secondary btn-sm"
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+      >
+        {loading ? <Loader size={14} className="spin" /> : <ChevronDown size={14} />}
+        Browse tags {ok && total > 0 ? `(${total.toLocaleString()})` : ''}
+      </button>
+
+      {open && (
+        <div className="tag-picker-panel">
+          {ok === false && (
+            <div className="alert alert-warning" style={{ marginBottom: 8 }}>
+              <WifiOff size={13} />
+              Couldn't reach Stack Overflow to list tags. Check Settings, or type tags
+              manually below.
+            </div>
+          )}
+          {ok === true && (
+            <div className="flex items-center gap-8" style={{ marginBottom: 4 }}>
+              <div style={{ position: 'relative', flex: 1 }}>
+                <Search size={13} style={{ position: 'absolute', left: 8, top: 9, color: 'var(--text-muted)' }} />
+                <input
+                  className="input"
+                  style={{ paddingLeft: 28 }}
+                  placeholder={`Search ${total.toLocaleString()} tags…`}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                title="Refresh tag list from Stack Overflow"
+                onClick={() => load(true)}
+              >
+                <RefreshCw size={13} />
+              </button>
+            </div>
+          )}
+          {ok === true && (
+            <div className="tag-picker-list">
+              {filtered.length === 0 && (
+                <div className="text-muted text-sm" style={{ padding: '6px 8px' }}>
+                  No tags match "{search}".
+                </div>
+              )}
+              {filtered.slice(0, 300).map((t) => {
+                const isSelected = selected.includes(t.tag)
+                return (
+                  <div
+                    key={t.tag}
+                    className={`tag-picker-item${isSelected ? ' selected' : ''}`}
+                    onClick={() => onToggle(t.tag)}
+                  >
+                    <input type="checkbox" checked={isSelected} readOnly />
+                    <span>{t.tag}</span>
+                    <span className="tag-picker-count">{t.question_count.toLocaleString()}q</span>
+                  </div>
+                )
+              })}
+              {filtered.length > 300 && (
+                <div className="text-muted text-sm" style={{ padding: '6px 8px' }}>
+                  Showing top 300 of {filtered.length} matches — refine your search.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function FetchPage() {
@@ -106,7 +233,19 @@ export function FetchPage() {
         <div className="card-title">Products / tags</div>
 
         <div className="form-group">
-          <label>Tags to ingest <span className="hint">press Enter or comma to add</span></label>
+          <div className="flex items-center justify-between" style={{ marginBottom: 2 }}>
+            <label style={{ marginBottom: 0 }}>Tags to ingest</label>
+            <TagDropdownPicker
+              selected={tags}
+              disabled={running}
+              onToggle={(t) => {
+                patchFetch({ tags: tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t] })
+              }}
+            />
+          </div>
+          <div className="hint" style={{ marginBottom: 6 }}>
+            Pick from the instance's tags above, or type below and press Enter/comma to add
+          </div>
           <div className="tag-input-wrap" onClick={() => document.getElementById('tag-bare')?.focus()}>
             {tags.map((t) => {
               const unavailable = tagStatus[t] === 'unavailable'

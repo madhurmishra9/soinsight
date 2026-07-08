@@ -25,7 +25,7 @@ from app.models import Answer, Classification, Pattern, Question, Remediation
 from app.settings import settings as app_settings
 from routers.dismissals import active_dismissed_keys
 from routers.settings import _current_config
-from services.aggregator import _compute_technical_ratio, _question_has_tag
+from services.aggregator import _compute_technical_ratio, _question_has_tag, _safe_tags
 
 log = structlog.get_logger("soinsight.routers.insights")
 
@@ -391,14 +391,14 @@ def _q_lines(questions: list[QuestionRef], indent: str = "   ") -> list[str]:
     """
     out: list[str] = []
     for q in questions:
-        link = f"[{q.title}]({q.url})" if q.url else f"{q.title} (#{q.so_id})"
-        suffix = f" — score {q.score}, {q.view_count} views"
+        link = f"[{q.title}]({q.url})" if q.url else q.title
+        suffix = f" [Q#{q.so_id}] — score {q.score}, {q.view_count} views"
         if q.answer_count:
             suffix += f", {q.answer_count} answers"
         out.append(f"{indent}- {link}{suffix}")
         for a in q.answers:
             tag = "✓ accepted" if a.is_accepted else f"score {a.score}"
-            out.append(f"{indent}  - _({tag})_ {_truncate(a.body)}")
+            out.append(f"{indent}  - _[A#{a.so_id}] ({tag})_ {_truncate(a.body)}")
     return out
 
 
@@ -591,15 +591,15 @@ def _remediation_md(items: list[dict]) -> list[str]:
         if it["evidence_questions"]:
             lines.append("**Grounded in:**")
             for q in it["evidence_questions"]:
-                link = (
-                    f"[{q['title']}]({q['url']})" if q["url"]
-                    else f"{q['title']} (#{q['so_id']})"
-                )
-                lines.append(f"- {link}")
+                link = f"[{q['title']}]({q['url']})" if q["url"] else q["title"]
+                lines.append(f"- {link} [Q#{q['so_id']}]")
             lines.append("")
         for a in it["evidence_answers"]:
             tag = "accepted" if a["is_accepted"] else f"score {a['score']}"
-            lines.append(f"  - _answer to #{a['question_so_id']} ({tag}):_ {a['snippet']}")
+            lines.append(
+                f"  - _[A#{a['so_id']}] answer to [Q#{a['question_so_id']}]"
+                f" ({tag}):_ {a['snippet']}"
+            )
         if it["evidence_answers"]:
             lines.append("")
     return lines
@@ -826,6 +826,124 @@ async def get_questions(
     return _questions_for(
         product, window, main, sub, session, from_date, to_date, noise,
         include_answers=True,
+    )
+
+
+class UnclassifiedReason(BaseModel):
+    reason: str
+    count: int
+
+
+class TagMetrics(BaseModel):
+    tag: str
+    total_questions: int
+    answered: int
+    unanswered: int
+    classified: int
+    unclassified: int
+
+
+class MetricsSummary(BaseModel):
+    window_days: int
+    from_date: str | None
+    to_date: str | None
+    tags: list[str]              # tags actually present in the range (breakdown keys)
+    total_questions: int
+    answered: int
+    unanswered: int
+    classified: int              # has >=1 Classification row (signal or noise)
+    unclassified: int            # fetched but never run through Analysis — "skipped/missing"
+    unclassified_reasons: list[UnclassifiedReason]
+    by_tag: list[TagMetrics]
+
+
+@router.get("/metrics", response_model=MetricsSummary)
+async def get_metrics(
+    tags: str = Query("", description="Comma-separated tags; empty = every tag present in range"),
+    window: int = Query(30, ge=1, le=365, description="Window in days"),
+    from_date: str | None = Query(None, description="YYYY-MM-DD — overrides window"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD — overrides window"),
+    session: Session = Depends(get_session),
+) -> MetricsSummary:
+    """Pipeline-health metrics for a date range: fetched vs. answered vs. classified.
+
+    Distinct from /summary — this reports on the *ingestion/analysis pipeline itself*
+    (did we fetch everything, did Analysis run on it) rather than category insights.
+    A question counts as "classified" once it has at least one Classification row
+    (signal or noise); the classifier always writes a row (falling back to a noise
+    classification on repeated model failures — see services/classifier.py), so an
+    "unclassified" question here means Analysis simply has not been run over it yet
+    for this product/window.
+    """
+    since, until = resolve_range(window, from_date, to_date)
+    all_qs = session.exec(
+        select(Question).where(Question.created_at >= since, Question.created_at <= until)
+    ).all()
+
+    wanted = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    questions = (
+        [q for q in all_qs if any(_question_has_tag(q, t) for t in wanted)]
+        if wanted
+        else all_qs
+    )
+
+    q_ids = [q.id for q in questions if q.id is not None]
+    classified_ids: set[int] = set()
+    if q_ids:
+        classified_ids = set(
+            session.exec(
+                select(Classification.question_id).where(
+                    Classification.question_id.in_(q_ids)  # type: ignore[attr-defined]
+                )
+            ).all()
+        )
+
+    total = len(questions)
+    answered = sum(1 for q in questions if q.answer_count > 0)
+    classified = sum(1 for q in questions if q.id in classified_ids)
+    unclassified = total - classified
+
+    unclassified_reasons: list[UnclassifiedReason] = []
+    if unclassified:
+        unclassified_reasons.append(UnclassifiedReason(
+            reason="Fetched but not yet processed by an Analysis run for this product/window",
+            count=unclassified,
+        ))
+
+    tag_set = sorted(wanted) if wanted else sorted({t for q in questions for t in _safe_tags(q)})
+    by_tag: list[TagMetrics] = []
+    for t in tag_set:
+        tqs = [q for q in questions if _question_has_tag(q, t)]
+        t_total = len(tqs)
+        t_answered = sum(1 for q in tqs if q.answer_count > 0)
+        t_classified = sum(1 for q in tqs if q.id in classified_ids)
+        by_tag.append(TagMetrics(
+            tag=t,
+            total_questions=t_total,
+            answered=t_answered,
+            unanswered=t_total - t_answered,
+            classified=t_classified,
+            unclassified=t_total - t_classified,
+        ))
+    by_tag.sort(key=lambda x: x.total_questions, reverse=True)
+
+    log.info(
+        "metrics_built", window_days=window, tags=tag_set,
+        total=total, answered=answered, classified=classified, unclassified=unclassified,
+    )
+
+    return MetricsSummary(
+        window_days=window,
+        from_date=from_date,
+        to_date=to_date,
+        tags=tag_set,
+        total_questions=total,
+        answered=answered,
+        unanswered=total - answered,
+        classified=classified,
+        unclassified=unclassified,
+        unclassified_reasons=unclassified_reasons,
+        by_tag=by_tag,
     )
 
 

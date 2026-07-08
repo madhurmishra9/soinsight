@@ -53,7 +53,7 @@ function AnswerList({ q }: { q: QuestionRef }) {
             >
               <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
                 {a.is_accepted && <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}><Check size={10} /> accepted</span>}
-                <span>score {a.score}</span>
+                <span>[A#{a.so_id}] · score {a.score}</span>
               </div>
               <div style={{ whiteSpace: 'pre-wrap', maxHeight: 220, overflow: 'auto' }}>
                 {stripHtml(a.body)}
@@ -102,6 +102,7 @@ export function QuestionDrawer({ target, product, windowDays, onClose, fromDate,
                 ) : (
                   q.title
                 )}
+                {' '}<span className="muted">[Q#{q.so_id}]</span>
                 <span className="muted"> · score {q.score} · {q.view_count} views</span>
                 <AnswerList q={q} />
               </li>
