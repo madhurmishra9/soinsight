@@ -315,9 +315,33 @@ export function HelpPage() {
             commonly "not yet analysed" (Analysis hasn't been run for this window since the fetch),
             occasionally a classification call failed and was never retried.
           </Field>
+          <Field name="People who asked">
+            Count of distinct <code>author_id</code> values across the in-range questions — how many
+            different people were asking, not how many questions were asked.
+          </Field>
+          <Field name="Got an accepted answer / Answered, still unresolved">
+            <code>Got an accepted answer</code> counts questions where the asker (or a moderator)
+            marked one answer accepted on Stack Overflow. <code>Answered, still unresolved</code> is
+            the gap: questions with at least one answer but none accepted — often a better signal of
+            unresolved pain than the raw "answered" count.
+          </Field>
+          <Field name="Avg. answers / question, Avg. views / question">
+            Simple engagement/interest averages over every in-range question for the selected tags.
+          </Field>
+          <Field name="Time to first answer">
+            Mean and median hours from a question's creation to its earliest captured answer.
+            Only counts questions whose answer bodies were actually fetched (see Fetch →{' '}
+            <code>FETCH_ANSWERS</code>) — a question with <code>answer_count &gt; 0</code> but no stored
+            answer rows is excluded here rather than skewing the average.
+          </Field>
           <Field name="Tag-wise breakdown">
             The same totals broken out per tag, so you can see which product's data is stale or
             incomplete at a glance.
+          </Field>
+          <Field name="Clicking a number">
+            Every stat and every tag-row cell opens a side drawer listing the exact questions behind
+            it (linked back to Stack Overflow with their <code>[Q#id]</code>), so a number is never a
+            dead end — you can always see what it's counting.
           </Field>
         </>
       ),

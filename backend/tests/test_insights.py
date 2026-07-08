@@ -18,7 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel
 
-from app.models import Classification, Pattern, Question
+from app.models import Answer, Classification, Pattern, Question
 from routers.insights import (
     InsightsSummary,
     _render_markdown,
@@ -420,6 +420,161 @@ def test_metrics_window_excludes_old_questions(seeded_client: TestClient) -> Non
     data = r.json()
     # q6 (45 days old, python) must not be counted.
     assert data["total_questions"] == 5
+
+
+# ─── GET /api/insights/metrics — engagement metrics + drill-down ──────────────
+
+
+@pytest.fixture
+def engagement_client() -> TestClient:
+    """
+    Seed data (all tagged "ruby", recent):
+      q1 author=1, score=5, views=100, answer_count=2, has_accepted=True
+         -> answers at +2h (accepted) and +5h  => time-to-answer = 2h
+      q2 author=2, score=3, views=50,  answer_count=1, has_accepted=False
+         -> answer at +10h                     => time-to-answer = 10h
+      q3 author=1, score=1, views=20,  answer_count=0  (unanswered; same author as q1)
+      q4 author=3, score=2, views=30,  answer_count=1, has_accepted=False
+         -> NO stored Answer row (simulates FETCH_ANSWERS=False at fetch time)
+
+    Expected: distinct_askers=3, accepted=1, not_accepted=2, acceptance_rate=1/3,
+    avg_answers=(2+1+0+1)/4=1.0, avg_views=(100+50+20+30)/4=50.0,
+    mean/median time-to-answer over [2, 10] = 6.0.
+    """
+    engine = _make_engine()
+
+    with Session(engine) as s:
+        q1 = Question(
+            so_id=901, title="Q1", body="b", tags=json.dumps(["ruby"]),
+            score=5, view_count=100, created_at=_RECENT, author_id=1,
+            answer_count=2, has_accepted=True,
+        )
+        q2 = Question(
+            so_id=902, title="Q2", body="b", tags=json.dumps(["ruby"]),
+            score=3, view_count=50, created_at=_RECENT, author_id=2,
+            answer_count=1, has_accepted=False,
+        )
+        q3 = Question(
+            so_id=903, title="Q3", body="b", tags=json.dumps(["ruby"]),
+            score=1, view_count=20, created_at=_RECENT, author_id=1,
+            answer_count=0, has_accepted=False,
+        )
+        q4 = Question(
+            so_id=904, title="Q4", body="b", tags=json.dumps(["ruby"]),
+            score=2, view_count=30, created_at=_RECENT, author_id=3,
+            answer_count=1, has_accepted=False,
+        )
+        for q in (q1, q2, q3, q4):
+            s.add(q)
+        s.commit()
+
+        s.add(Answer(
+            so_id=9001, question_so_id=901, body="accepted answer", score=10,
+            is_accepted=True, author_id=99, created_at=_RECENT + timedelta(hours=2),
+        ))
+        s.add(Answer(
+            so_id=9002, question_so_id=901, body="second answer", score=1,
+            is_accepted=False, author_id=98, created_at=_RECENT + timedelta(hours=5),
+        ))
+        s.add(Answer(
+            so_id=9003, question_so_id=902, body="unaccepted answer", score=2,
+            is_accepted=False, author_id=97, created_at=_RECENT + timedelta(hours=10),
+        ))
+        # q4 has answer_count=1 but intentionally NO Answer row stored.
+        s.commit()
+
+    app = FastAPI()
+    app.include_router(insights_router)
+
+    def override() -> Any:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override
+    return TestClient(app)
+
+
+def test_metrics_engagement_fields(engagement_client: TestClient) -> None:
+    r = engagement_client.get("/api/insights/metrics?tags=ruby&window=30")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total_questions"] == 4
+    assert data["answered"] == 3
+    assert data["unanswered"] == 1
+    assert data["accepted"] == 1
+    assert data["not_accepted"] == 2
+    assert data["acceptance_rate"] == pytest.approx(1 / 3, abs=1e-3)
+    assert data["avg_answers_per_question"] == pytest.approx(1.0)
+    assert data["avg_views_per_question"] == pytest.approx(50.0)
+    assert data["distinct_askers"] == 3
+    assert data["mean_time_to_answer_hours"] == pytest.approx(6.0)
+    assert data["median_time_to_answer_hours"] == pytest.approx(6.0)
+
+
+def test_metrics_by_tag_includes_engagement_fields(engagement_client: TestClient) -> None:
+    r = engagement_client.get("/api/insights/metrics?window=30")
+    data = r.json()
+    row = next(t for t in data["by_tag"] if t["tag"] == "ruby")
+    assert row["accepted"] == 1
+    assert row["acceptance_rate"] == pytest.approx(1 / 3, abs=1e-3)
+    assert row["mean_time_to_answer_hours"] == pytest.approx(6.0)
+
+
+def test_metric_questions_bucket_total_sorted_by_score(engagement_client: TestClient) -> None:
+    r = engagement_client.get(
+        "/api/insights/metrics/questions", params={"bucket": "total", "tags": "ruby", "window": 30}
+    )
+    assert r.status_code == 200
+    so_ids = [q["so_id"] for q in r.json()]
+    assert so_ids == [901, 902, 904, 903]  # score desc: 5, 3, 2, 1
+
+
+def test_metric_questions_bucket_unanswered(engagement_client: TestClient) -> None:
+    r = engagement_client.get(
+        "/api/insights/metrics/questions",
+        params={"bucket": "unanswered", "tags": "ruby", "window": 30},
+    )
+    assert [q["so_id"] for q in r.json()] == [903]
+
+
+def test_metric_questions_bucket_accepted(engagement_client: TestClient) -> None:
+    r = engagement_client.get(
+        "/api/insights/metrics/questions",
+        params={"bucket": "accepted", "tags": "ruby", "window": 30},
+    )
+    data = r.json()
+    assert [q["so_id"] for q in data] == [901]
+    assert data[0]["time_to_first_answer_hours"] == pytest.approx(2.0)
+
+
+def test_metric_questions_bucket_not_accepted(engagement_client: TestClient) -> None:
+    r = engagement_client.get(
+        "/api/insights/metrics/questions",
+        params={"bucket": "not_accepted", "tags": "ruby", "window": 30},
+    )
+    # q2 (answered, not accepted) and q4 (answer_count>0, no accepted) — score desc.
+    assert [q["so_id"] for q in r.json()] == [902, 904]
+
+
+def test_metric_questions_bucket_answered_with_time_sorted_slowest_first(
+    engagement_client: TestClient,
+) -> None:
+    r = engagement_client.get(
+        "/api/insights/metrics/questions",
+        params={"bucket": "answered_with_time", "tags": "ruby", "window": 30},
+    )
+    data = r.json()
+    # q4 has answer_count>0 but no stored Answer row, so it's excluded here.
+    assert [q["so_id"] for q in data] == [902, 901]
+    assert data[0]["time_to_first_answer_hours"] == pytest.approx(10.0)
+    assert data[1]["time_to_first_answer_hours"] == pytest.approx(2.0)
+
+
+def test_metric_questions_invalid_bucket_returns_422(engagement_client: TestClient) -> None:
+    r = engagement_client.get(
+        "/api/insights/metrics/questions", params={"bucket": "not_a_real_bucket", "window": 30}
+    )
+    assert r.status_code == 422
 
 
 # ─── GET /api/insights/report ─────────────────────────────────────────────────

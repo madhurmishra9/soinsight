@@ -216,6 +216,9 @@ export interface TagMetrics {
   unanswered: number
   classified: number
   unclassified: number
+  accepted: number
+  acceptance_rate: number | null
+  mean_time_to_answer_hours: number | null
 }
 
 export interface MetricsSummary {
@@ -229,5 +232,35 @@ export interface MetricsSummary {
   classified: number
   unclassified: number
   unclassified_reasons: UnclassifiedReason[]
+  accepted: number
+  not_accepted: number
+  acceptance_rate: number | null
+  avg_answers_per_question: number | null
+  avg_views_per_question: number | null
+  distinct_askers: number
+  mean_time_to_answer_hours: number | null
+  median_time_to_answer_hours: number | null
   by_tag: TagMetrics[]
+}
+
+export type MetricBucket =
+  | 'total'
+  | 'answered'
+  | 'unanswered'
+  | 'classified'
+  | 'unclassified'
+  | 'accepted'
+  | 'not_accepted'
+  | 'answered_with_time'
+
+export interface MetricQuestionRef {
+  so_id: number
+  title: string
+  url: string | null
+  score: number
+  view_count: number
+  answer_count: number
+  has_accepted: boolean
+  created_at: string
+  time_to_first_answer_hours: number | null
 }

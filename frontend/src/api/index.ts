@@ -7,6 +7,8 @@ import type {
   DismissedItem,
   FetchRequest,
   InsightsSummary,
+  MetricBucket,
+  MetricQuestionRef,
   MetricsSummary,
   PatternItem,
   QuestionRef,
@@ -154,6 +156,17 @@ export const getMetrics = (
 ) =>
   api.get<MetricsSummary>('/api/insights/metrics', {
     params: { tags: tags.join(','), window, from_date: fromDate, to_date: toDate },
+  })
+
+export const getMetricQuestions = (
+  bucket: MetricBucket,
+  tags: string[],
+  window: number,
+  fromDate?: string,
+  toDate?: string,
+) =>
+  api.get<MetricQuestionRef[]>('/api/insights/metrics/questions', {
+    params: { bucket, tags: tags.join(','), window, from_date: fromDate, to_date: toDate },
   })
 
 // ── F3 Tag auto-discovery ─────────────────────────────────────────────────────
