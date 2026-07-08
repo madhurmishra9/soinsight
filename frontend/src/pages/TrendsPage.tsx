@@ -56,9 +56,9 @@ function TrendChart({ items }: { items: TrendItem[] }) {
         to <strong>Trailing avg</strong>, the sharper the spike — categories flagged 🚨 rising are
         outlined in red. Showing top {Math.min(MAX_CHART_ITEMS, items.length)} of {items.length} by multiplier.
       </div>
-      <div className="chart-wrap" style={{ height: 340 }}>
+      <div className="chart-wrap" style={{ height: 370 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 72 }}>
+          <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 80 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={cssVar('--grid')} />
             <XAxis
               dataKey="name"
@@ -66,6 +66,7 @@ function TrendChart({ items }: { items: TrendItem[] }) {
               angle={-35}
               textAnchor="end"
               interval={0}
+              height={90}
             />
             <YAxis tick={{ fontSize: 11, fill: cssVar('--axis') }} allowDecimals={false} />
             <Tooltip
@@ -77,6 +78,8 @@ function TrendChart({ items }: { items: TrendItem[] }) {
               }}
             />
             <Legend
+              verticalAlign="top"
+              height={28}
               wrapperStyle={{ color: cssVar('--text') }}
               formatter={(value) => (value === 'recent' ? 'Recent count' : 'Trailing avg / window')}
             />

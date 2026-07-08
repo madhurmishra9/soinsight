@@ -367,7 +367,7 @@ function RemediationGuide({
             <Sparkles size={15} style={{ verticalAlign: '-2px', marginRight: 6 }} />
             Remediation guide
           </div>
-          <div className="card-subtitle" style={{ marginBottom: 0 }}>
+          <div className="card-subtitle" style={{ marginTop: 0, marginBottom: 0 }}>
             Grounded, detailed fixes per cluster of similar questions — derived strictly from the captured questions and answers, so the same questions stop recurring.
           </div>
         </div>
