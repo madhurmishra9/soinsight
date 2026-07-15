@@ -4,6 +4,8 @@ import type {
   ConnectionTestResult,
   InsightsSummary,
   RemediationItem,
+  ScheduleConfigPayload,
+  ScheduleStatus,
   SettingsPayload,
   TrendItem,
   MetricsSummary,
@@ -68,23 +70,34 @@ export interface SettingsDraftState {
   testError: string | null
 }
 
+/** No secrets involved, so unlike settingsDraft this is safe to mirror to sessionStorage. */
+export interface SchedulePageState {
+  form: ScheduleConfigPayload | null
+  status: ScheduleStatus | null
+  saveMsg: { ok: boolean; text: string } | null
+  loaded: boolean
+}
+
 interface PageStateContextType {
   dashboard: DashboardPageState
   trends: TrendsPageState
   metrics: MetricsPageState
   tagSuggestions: TagSuggestionsPageState
   settingsDraft: SettingsDraftState
+  schedule: SchedulePageState
   patchDashboard: (p: Partial<DashboardPageState>) => void
   patchTrends: (p: Partial<TrendsPageState>) => void
   patchMetrics: (p: Partial<MetricsPageState>) => void
   patchTagSuggestions: (p: Partial<TagSuggestionsPageState>) => void
   patchSettingsDraft: (p: Partial<SettingsDraftState>) => void
+  patchSchedule: (p: Partial<SchedulePageState>) => void
 }
 
 const DASHBOARD_KEY = 'soinsight.page.dashboard'
 const TRENDS_KEY = 'soinsight.page.trends'
 const METRICS_KEY = 'soinsight.page.metrics'
 const TAG_SUGGESTIONS_KEY = 'soinsight.page.tagSuggestions'
+const SCHEDULE_KEY = 'soinsight.page.schedule'
 // No sessionStorage key for settingsDraft — see SettingsDraftState doc comment.
 
 const defaultDashboard: DashboardPageState = {
@@ -126,6 +139,13 @@ const defaultSettingsDraft: SettingsDraftState = {
   testError: null,
 }
 
+const defaultSchedule: SchedulePageState = {
+  form: null,
+  status: null,
+  saveMsg: null,
+  loaded: false,
+}
+
 function restore<T>(key: string, fallback: T): T {
   try {
     const raw = sessionStorage.getItem(key)
@@ -150,11 +170,13 @@ const PageStateContext = createContext<PageStateContextType>({
   metrics: defaultMetrics,
   tagSuggestions: defaultTagSuggestions,
   settingsDraft: defaultSettingsDraft,
+  schedule: defaultSchedule,
   patchDashboard: () => undefined,
   patchTrends: () => undefined,
   patchMetrics: () => undefined,
   patchTagSuggestions: () => undefined,
   patchSettingsDraft: () => undefined,
+  patchSchedule: () => undefined,
 })
 
 export function PageStateProvider({ children }: { children: ReactNode }) {
@@ -163,6 +185,7 @@ export function PageStateProvider({ children }: { children: ReactNode }) {
   const [metrics, setMetrics] = useState<MetricsPageState>(() => restore(METRICS_KEY, defaultMetrics))
   const [tagSuggestions, setTagSuggestions] = useState<TagSuggestionsPageState>(() => restore(TAG_SUGGESTIONS_KEY, defaultTagSuggestions))
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraftState>(defaultSettingsDraft)
+  const [schedule, setSchedule] = useState<SchedulePageState>(() => restore(SCHEDULE_KEY, defaultSchedule))
 
   const patchDashboard = (p: Partial<DashboardPageState>) =>
     setDashboard((prev) => { const next = { ...prev, ...p }; persist(DASHBOARD_KEY, next); return next })
@@ -175,12 +198,14 @@ export function PageStateProvider({ children }: { children: ReactNode }) {
   // Intentionally in-memory only — no sessionStorage persist() call (see SettingsDraftState doc comment).
   const patchSettingsDraft = (p: Partial<SettingsDraftState>) =>
     setSettingsDraft((prev) => ({ ...prev, ...p }))
+  const patchSchedule = (p: Partial<SchedulePageState>) =>
+    setSchedule((prev) => { const next = { ...prev, ...p }; persist(SCHEDULE_KEY, next); return next })
 
   return (
     <PageStateContext.Provider
       value={{
-        dashboard, trends, metrics, tagSuggestions, settingsDraft,
-        patchDashboard, patchTrends, patchMetrics, patchTagSuggestions, patchSettingsDraft,
+        dashboard, trends, metrics, tagSuggestions, settingsDraft, schedule,
+        patchDashboard, patchTrends, patchMetrics, patchTagSuggestions, patchSettingsDraft, patchSchedule,
       }}
     >
       {children}

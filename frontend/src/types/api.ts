@@ -129,6 +129,27 @@ export interface SettingsPayload {
   has_api_key?: boolean
 }
 
+// ── Scheduled auto-fetch ────────────────────────────────────────────────────
+
+export interface ScheduleConfigPayload {
+  enabled: boolean
+  interval_hours: number
+  products: string[]
+  window_days: number
+}
+
+export interface ScheduleConfigResponse extends ScheduleConfigPayload {
+  last_run_at: string | null
+  next_run_at: string | null
+}
+
+export interface ScheduleStatus {
+  enabled: boolean
+  running: boolean
+  last_run_at: string | null
+  next_run_at: string | null
+}
+
 export interface FetchRequest {
   products: string[]
   window_days: number

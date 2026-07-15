@@ -80,6 +80,26 @@ disk/sessionStorage like the other pages' filters — a full page reload clears
 the draft, the same tradeoff already made for the saved key itself, so a secret
 never touches browser storage.
 
+### Scheduled auto-fetch
+
+A card at the bottom of Settings controls the background job that runs
+**Fetch → Analysis → Aggregate** automatically, on an interval, so data stays
+fresh without visiting those pages by hand.
+
+| Field | Meaning |
+|---|---|
+| **Enable scheduled auto-fetch** | Master on/off switch. The backend's scheduler loop always runs (it polls every 60s); this flag is what it checks before actually doing anything. |
+| **Interval (hours)** | How often a run fires, measured from the end of the previous run. |
+| **Window (days)** | The look-back window each scheduled run uses for both the Fetch and the Aggregate step. |
+| **Tags to auto-fetch** | Chip multi-select from your known tags (tags you've fetched or configured before) — nothing runs for tags not selected here. |
+| **Save schedule** | Persists the config (`POST /api/schedule`) — takes effect on the *next* poll, no restart needed. |
+| **Run now** | Saves the current form, then fires an immediate one-off run (`POST /api/schedule/trigger`) regardless of the configured interval — useful to test a new configuration or force a refresh outside the schedule. |
+| **Status row** | Enabled/Disabled, whether a run is currently in progress, and the last/next run timestamps — read from `GET /api/schedule/status`, refreshed automatically every 30s while this page is open. |
+
+Each scheduled run is idempotent end-to-end: ingestion dedupes by `so_id`,
+classification skips already-classified questions, and aggregation upserts
+patterns — so an overlapping or repeated run never double-counts anything.
+
 ## 5. Fetch Questions
 
 | Field | Meaning |
@@ -243,13 +263,15 @@ Concretely:
   and — crucially — the live SSE connection for an in-flight run. A fetch or
   analysis keeps streaming even while you're on a different page, and survives
   a full browser reload (it reconnects to the still-running backend job).
-- **Dashboard, Rising trends, Metrics, Tag suggestions** (`PageStateContext`):
-  filter inputs and the last successful response, mirrored to `sessionStorage`
-  so a reload restores them too.
-- **Settings** (`PageStateContext`, `settingsDraft` slice): your in-progress
-  form, including an unsaved API key, kept in memory only — deliberately
-  **not** written to `sessionStorage`, so a secret never touches browser
-  storage; a full reload clears the draft (not the saved server-side config).
+- **Dashboard, Rising trends, Metrics, Tag suggestions, Scheduled auto-fetch**
+  (`PageStateContext`): filter inputs and the last successful response,
+  mirrored to `sessionStorage` so a reload restores them too.
+- **Settings connection form** (`PageStateContext`, `settingsDraft` slice):
+  your in-progress form, including an unsaved API key, kept in memory only —
+  deliberately **not** written to `sessionStorage`, so a secret never touches
+  browser storage; a full reload clears the draft (not the saved server-side
+  config). The Scheduled auto-fetch card below it has no secrets, so it uses
+  the regular sessionStorage-backed persistence like the other pages.
 
 Only an explicit action — changing a filter and reloading, saving new
 Settings, or a full browser refresh where noted above — changes what's shown.
