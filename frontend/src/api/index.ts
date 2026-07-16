@@ -15,6 +15,9 @@ import type {
   RemediationItem,
   RunItem,
   RunResponse,
+  ScheduleConfigPayload,
+  ScheduleConfigResponse,
+  ScheduleStatus,
   SettingsPayload,
   TagCoverage,
   TagSuggestion,
@@ -35,6 +38,20 @@ export const getSettings = () =>
 
 export const getOllamaModels = () =>
   api.get<{ models: string[] }>('/api/settings/ollama-models')
+
+// ── Scheduled auto-fetch ─────────────────────────────────────────────────────
+
+export const getSchedule = () =>
+  api.get<ScheduleConfigResponse>('/api/schedule')
+
+export const saveSchedule = (payload: ScheduleConfigPayload) =>
+  api.post<ScheduleConfigResponse>('/api/schedule', payload)
+
+export const getScheduleStatus = () =>
+  api.get<ScheduleStatus>('/api/schedule/status')
+
+export const triggerScheduleNow = () =>
+  api.post<{ status: string }>('/api/schedule/trigger')
 
 // ── Questions / Fetch ─────────────────────────────────────────────────────────
 
