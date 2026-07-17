@@ -37,6 +37,7 @@ _SO_ANSWER_ACCEPTED = "isAccepted"
 # ─────────────────────────────────────────────────────────────────────────────
 
 DAILY_BUDGET = 9_500  # 95 % of the 10 000/day quota — remaining is headroom
+DEFAULT_ANSWER_CONCURRENCY = 10  # bounded concurrent answer-fetch requests
 
 
 class BudgetExhaustedError(RuntimeError):
@@ -170,6 +171,13 @@ class IngestService:
     """
     Fetches questions from SO Enterprise and upserts them into SQLite.
     Idempotent: re-running with the same products/window skips existing rows.
+
+    Answer fetches (one HTTP round trip per answered question — the dominant
+    cost of a large first-time ingest) run with bounded concurrency rather than
+    one at a time. The network fetch (`_fetch_answers_raw`) touches no shared
+    state and is safe to run concurrently; the resulting rows are then written
+    to the DB sequentially (`_persist_answers`), since a SQLModel `Session` is
+    not safe for concurrent use.
     """
 
     def __init__(
@@ -177,48 +185,73 @@ class IngestService:
         client: SOClient,
         budget: BudgetTracker | None = None,
         fetch_answers: bool = True,
+        answer_concurrency: int = DEFAULT_ANSWER_CONCURRENCY,
     ) -> None:
         self._client = client
         self._budget = budget or BudgetTracker()
         # Answers are only fetched when enabled AND the client actually exposes
         # iter_answers — this keeps lightweight/mocked clients working unchanged.
         self._fetch_answers = fetch_answers and hasattr(client, "iter_answers")
+        self._answer_semaphore = asyncio.Semaphore(max(1, answer_concurrency))
 
-    async def _ingest_answers(
+    async def _fetch_answers_raw(
         self,
         question_so_id: int,
         team: str | None,
-        session: Session,
-    ) -> int:
+    ) -> list[dict[str, Any]]:
         """
-        Fetch and upsert all answers for one question. Returns the number of new
-        answer rows inserted. Failures are non-fatal (logged, return what we got).
-        Charges one budget unit for the answer fetch of this question.
+        Fetch and map all answers for one question — network I/O only, no DB
+        access, so many of these can safely run concurrently at once (bounded
+        by `_answer_semaphore`). Failures are non-fatal (logged, returns what
+        was fetched so far). Charges one budget unit per question fetched.
         """
         try:
             self._budget.charge()
         except BudgetExhaustedError:
             log.warning("budget_exhausted_answers", question_so_id=question_so_id)
-            return 0
+            return []
 
+        mapped: list[dict[str, Any]] = []
+        async with self._answer_semaphore:
+            try:
+                async for raw_a in self._client.iter_answers(question_so_id, team=team):
+                    try:
+                        mapped.append(_map_answer(raw_a, question_so_id=question_so_id))
+                    except (KeyError, ValueError, TypeError) as exc:
+                        log.warning("map_answer_failed", error=str(exc))
+            except Exception as exc:  # network/HTTP — don't abort the whole ingest
+                log.warning("answer_fetch_failed", question_so_id=question_so_id, error=str(exc))
+
+        return mapped
+
+    @staticmethod
+    def _persist_answers(mapped: list[dict[str, Any]], session: Session) -> int:
+        """Insert already-fetched answers that aren't already stored.
+
+        Pure local DB work — always called from the single ingestion coroutine
+        after concurrent fetches are drained, never while any is still in
+        flight, so there's no session-sharing hazard.
+        """
         inserted = 0
-        try:
-            async for raw_a in self._client.iter_answers(question_so_id, team=team):
-                try:
-                    a_data = _map_answer(raw_a, question_so_id=question_so_id)
-                    a_so_id = a_data["so_id"]
-                    exists = session.exec(
-                        select(Answer).where(Answer.so_id == a_so_id)
-                    ).first()
-                    if exists is None:
-                        session.add(Answer(**a_data))
-                        inserted += 1
-                except (KeyError, ValueError, TypeError) as exc:
-                    log.warning("map_answer_failed", error=str(exc))
-        except Exception as exc:  # network/HTTP — don't abort the whole ingest
-            log.warning("answer_fetch_failed", question_so_id=question_so_id, error=str(exc))
-
+        for a_data in mapped:
+            exists = session.exec(
+                select(Answer).where(Answer.so_id == a_data["so_id"])
+            ).first()
+            if exists is None:
+                session.add(Answer(**a_data))
+                inserted += 1
         return inserted
+
+    async def _drain_answer_tasks(
+        self,
+        tasks: list[asyncio.Task[list[dict[str, Any]]]],
+        session: Session,
+    ) -> int:
+        """Await a batch of in-flight answer-fetch tasks and persist their results."""
+        if not tasks:
+            return 0
+        results = await asyncio.gather(*tasks)
+        return sum(self._persist_answers(mapped, session) for mapped in results)
 
     async def run(
         self,
@@ -291,48 +324,65 @@ class IngestService:
                     else:
                         log.info("ingest_full", tag=tag, since=str(effective_since))
 
-                async for raw_q in self._client.iter_questions(
-                    tag=tag, since=effective_since, until=until, team=team
-                ):
-                    try:
-                        q_data = _map_question(raw_q, team_slug=team)
-                        so_id: int = q_data["so_id"]
+                # In-flight answer-fetch tasks for this tag, drained (awaited +
+                # persisted) every 25 questions and at tag end — batching keeps
+                # progress events and commits at the same cadence as before,
+                # while the fetches themselves run concurrently in between.
+                answer_tasks: list[asyncio.Task[list[dict[str, Any]]]] = []
 
-                        existing = session.exec(
-                            select(Question).where(Question.so_id == so_id)
-                        ).first()
+                try:
+                    async for raw_q in self._client.iter_questions(
+                        tag=tag, since=effective_since, until=until, team=team
+                    ):
+                        try:
+                            q_data = _map_question(raw_q, team_slug=team)
+                            so_id: int = q_data["so_id"]
 
-                        if existing is None:
-                            session.add(Question(**q_data))
-                            result.inserted += 1
-                            # Pull this question's answers (best-effort, gated by
-                            # config + budget). Linked by question_so_id, so the
-                            # parent's local PK is not needed here.
-                            if self._fetch_answers and q_data.get("answer_count"):
-                                fetched = await self._ingest_answers(
-                                    question_so_id=so_id,
-                                    team=team,
-                                    session=session,
+                            existing = session.exec(
+                                select(Question).where(Question.so_id == so_id)
+                            ).first()
+
+                            if existing is None:
+                                session.add(Question(**q_data))
+                                result.inserted += 1
+                                # Kick off this question's answer fetch concurrently
+                                # (best-effort, gated by config + budget) rather than
+                                # awaiting it inline — dominant cost of a large ingest.
+                                if self._fetch_answers and q_data.get("answer_count"):
+                                    answer_tasks.append(asyncio.create_task(
+                                        self._fetch_answers_raw(question_so_id=so_id, team=team)
+                                    ))
+                            else:
+                                result.skipped += 1
+
+                            total = result.inserted + result.skipped
+                            if total % 25 == 0:
+                                result.answers_fetched += await self._drain_answer_tasks(
+                                    answer_tasks, session
                                 )
-                                result.answers_fetched += fetched
-                        else:
-                            result.skipped += 1
+                                answer_tasks = []
+                                session.commit()
+                                await queue.put({
+                                    "type": "progress",
+                                    "tag": tag,
+                                    "inserted": result.inserted,
+                                    "skipped": result.skipped,
+                                })
+                        except (KeyError, ValueError, TypeError) as exc:
+                            result.errors += 1
+                            log.warning("map_question_failed", error=str(exc))
+                except BaseException:
+                    # The question stream itself failed (or the run was cancelled) —
+                    # don't leak still-in-flight answer-fetch tasks; let the error
+                    # propagate exactly as before this concurrency change.
+                    for t in answer_tasks:
+                        t.cancel()
+                    raise
 
-                        total = result.inserted + result.skipped
-                        if total % 25 == 0:
-                            session.commit()
-                            await queue.put({
-                                "type": "progress",
-                                "tag": tag,
-                                "inserted": result.inserted,
-                                "skipped": result.skipped,
-                            })
-                    except (KeyError, ValueError, TypeError) as exc:
-                        result.errors += 1
-                        log.warning("map_question_failed", error=str(exc))
-
-                # Per-tag wrap-up commit + progress event — guarantees the UI
-                # always sees a final count for the tag, even at low volume.
+                # Drain any answer fetches still in flight, then per-tag
+                # wrap-up commit + progress event — guarantees the UI always
+                # sees a final count for the tag, even at low volume.
+                result.answers_fetched += await self._drain_answer_tasks(answer_tasks, session)
                 session.commit()
                 await queue.put({
                     "type": "progress",

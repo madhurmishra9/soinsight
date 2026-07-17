@@ -243,6 +243,7 @@ async def _run_ingestion(
                 client=client,
                 budget=_budget,
                 fetch_answers=settings.fetch_answers,
+                answer_concurrency=settings.answer_fetch_concurrency,
             )
             await service.run(
                 products=products,

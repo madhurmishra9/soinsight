@@ -443,3 +443,133 @@ async def test_ingest_without_iter_answers_is_safe() -> None:
 
     assert result.inserted == 1
     assert result.answers_fetched == 0
+
+
+# ─── IngestService: concurrent answer fetching ────────────────────────────────
+
+
+class ConcurrencyTrackingClient(MockSOClientWithAnswers):
+    """Records how many iter_answers calls were in flight at once, proving
+    answer fetches actually overlap instead of running one at a time."""
+
+    def __init__(
+        self,
+        questions: list[dict[str, Any]],
+        answers: dict[int, list[dict[str, Any]]],
+        delay: float = 0.02,
+    ) -> None:
+        super().__init__(questions, answers)
+        self._delay = delay
+        self.current = 0
+        self.max_concurrent = 0
+
+    async def iter_answers(
+        self, question_id: int, team: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        self.current += 1
+        self.max_concurrent = max(self.max_concurrent, self.current)
+        try:
+            await asyncio.sleep(self._delay)
+            async for a in super().iter_answers(question_id, team=team):
+                yield a
+        finally:
+            self.current -= 1
+
+
+def _many_questions_with_answers(
+    n: int,
+) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+    questions = [{**RAW_QUESTION, "id": 1000 + i} for i in range(n)]
+    answers = {1000 + i: [{**RAW_ANSWER, "id": 5000 + i}] for i in range(n)}
+    return questions, answers
+
+
+@pytest.mark.asyncio
+async def test_ingest_answer_fetches_run_concurrently() -> None:
+    """With concurrency > 1, multiple answer fetches must overlap in time."""
+    questions, answers = _many_questions_with_answers(20)
+    client = ConcurrencyTrackingClient(questions, answers, delay=0.02)
+    engine = _make_engine()
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    service = IngestService(
+        client=client,  # type: ignore[arg-type]
+        budget=BudgetTracker(daily_limit=1000),
+        fetch_answers=True,
+        answer_concurrency=5,
+    )
+
+    result = await service.run(["python"], 30, None, queue, engine)
+
+    assert result.inserted == 20
+    assert result.answers_fetched == 20
+    assert client.max_concurrent > 1, "answer fetches ran strictly one at a time"
+    assert client.max_concurrent <= 5, "exceeded the configured concurrency bound"
+
+
+@pytest.mark.asyncio
+async def test_ingest_answer_concurrency_respects_lower_bound() -> None:
+    """A concurrency of 1 must serialize fetches — the safety valve still works."""
+    questions, answers = _many_questions_with_answers(10)
+    client = ConcurrencyTrackingClient(questions, answers, delay=0.01)
+    engine = _make_engine()
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    service = IngestService(
+        client=client,  # type: ignore[arg-type]
+        budget=BudgetTracker(daily_limit=1000),
+        fetch_answers=True,
+        answer_concurrency=1,
+    )
+
+    result = await service.run(["python"], 30, None, queue, engine)
+
+    assert result.answers_fetched == 10
+    assert client.max_concurrent == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_answer_concurrency_zero_or_negative_still_works() -> None:
+    """A misconfigured concurrency of 0 must not deadlock — clamps to 1."""
+    questions, answers = _many_questions_with_answers(3)
+    engine = _make_engine()
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    service = IngestService(
+        client=MockSOClientWithAnswers(questions, answers),  # type: ignore[arg-type]
+        budget=BudgetTracker(daily_limit=1000),
+        fetch_answers=True,
+        answer_concurrency=0,
+    )
+
+    result = await service.run(["python"], 30, None, queue, engine)
+
+    assert result.answers_fetched == 3
+
+
+@pytest.mark.asyncio
+async def test_ingest_many_answers_all_persisted_and_idempotent() -> None:
+    """A batch spanning multiple 25-question drain checkpoints must persist
+    every answer exactly once, with no duplicates on rerun."""
+    questions, answers = _many_questions_with_answers(60)
+    engine = _make_engine()
+    budget = BudgetTracker(daily_limit=1000)
+    client = MockSOClientWithAnswers(questions, answers)
+
+    q1: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    r1 = await IngestService(
+        client=client, budget=budget, fetch_answers=True, answer_concurrency=8  # type: ignore[arg-type]
+    ).run(["python"], 30, None, q1, engine)
+
+    assert r1.inserted == 60
+    assert r1.answers_fetched == 60
+    with Session(engine) as session:
+        assert len(session.exec(select(Answer)).all()) == 60
+
+    # Rerun: questions already exist, so no new answer fetches happen at all.
+    q2: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    r2 = await IngestService(
+        client=client, budget=budget, fetch_answers=True, answer_concurrency=8  # type: ignore[arg-type]
+    ).run(["python"], 30, None, q2, engine)
+
+    assert r2.inserted == 0
+    assert r2.answers_fetched == 0
+    with Session(engine) as session:
+        assert len(session.exec(select(Answer)).all()) == 60
