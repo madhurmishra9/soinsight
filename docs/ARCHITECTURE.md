@@ -33,6 +33,11 @@ proxied to the backend on :8000.
      `since`.
    - `_map_question` maps SO v3 fields (camelCase, ISO dates, tag objects) into
      the `Question` table; upsert dedupes on `so_id`.
+   - When `FETCH_ANSWERS` is on, each newly-inserted question's answers are
+     fetched with bounded concurrency (`ANSWER_FETCH_CONCURRENCY`, default 10)
+     rather than one at a time — the network fetch is concurrency-safe (no
+     shared session state), while the resulting rows are written to SQLite
+     sequentially in batches of 25 (session is not safe for concurrent use).
 
 2. **Classification** (`routers/analysis.py` → `services/classifier.py`)
    - In-window questions are tag-filtered, then **pre-filtered** against the

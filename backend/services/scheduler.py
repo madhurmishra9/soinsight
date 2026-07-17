@@ -167,7 +167,10 @@ class SchedulerService:
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         try:
             async with SOClient(base_url=base_url, auth=auth) as client:
-                svc = IngestService(client=client)
+                svc = IngestService(
+                    client=client,
+                    answer_concurrency=settings.answer_fetch_concurrency,
+                )
                 await svc.run(
                     products=products,
                     window_days=window_days,

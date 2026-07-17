@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     # When true, ingestion also pulls each new question's answers (one extra
     # API call per newly-inserted question that reports answer_count > 0).
     fetch_answers: bool = True
+    # How many of those answer-fetch calls run concurrently. Answer fetches are
+    # the dominant cost of a large first-time ingest (one HTTP round trip per
+    # answered question); raising this cuts wall-clock time roughly linearly up
+    # to what your SO Enterprise instance can comfortably absorb concurrently.
+    # Keep conservative — this adds load to a shared, possibly on-prem instance.
+    answer_fetch_concurrency: int = 10
     db_path: str = "./data/soinsight.db"
     chroma_path: str = "./data/chroma"
     log_level: str = "INFO"

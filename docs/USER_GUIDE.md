@@ -286,9 +286,27 @@ Data stays fresh without manual fetches. Adjust in the launcher CONFIG block.
 
 | Operation | First run | Subsequent runs |
 |-----------|-----------|-----------------|
-| Fetch (3 tags, 90d, ~16k questions) | ~1 hour | **seconds–minutes** (incremental) |
+| Fetch (3 tags, 90d, ~16k questions) | **minutes**, not hours — see below | **seconds–minutes** (incremental) |
 | Analysis (30 new questions, 8B model, CPU) | minutes | **seconds** if nothing new |
 | Dashboard / Metrics / Trends / exports | instant | instant (reads DB) |
+
+### Why a first-time fetch used to take ~1 hour
+
+The dominant cost of a large fetch is answer bodies: one extra API call per
+question that has answers. That used to happen strictly one question at a
+time — each round trip fully awaited before starting the next — so wall-clock
+time scaled linearly with question count regardless of how fast your SO
+Enterprise instance actually responded.
+
+Answer fetches now run with **bounded concurrency** (`ANSWER_FETCH_CONCURRENCY`,
+default 10) instead of serially, so the same ~16k-question fetch that took
+~1 hour now completes in roughly `1 hour ÷ ANSWER_FETCH_CONCURRENCY` — a few
+minutes at the default of 10, in normal conditions. Question metadata pagination
+itself is unaffected (still sequential) since it's cheap relative to answer
+fetching. Raise `ANSWER_FETCH_CONCURRENCY` for a faster first fetch, or lower
+it if your instance is shared/rate-limited and you'd rather not add concurrent
+load — the existing daily call budget and per-call retry/backoff apply
+unchanged either way.
 
 ## 16. Troubleshooting
 

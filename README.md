@@ -101,6 +101,7 @@ All configuration lives in the CONFIG block at the top of each launcher, which i
 | `OLLAMA_MODEL` | No | Classification model tag; must match `ollama list`. Also switchable at runtime from the Settings page. |
 | `DEFAULT_TAGS` | No | Comma-separated tags seeded into the scheduled fetch |
 | `FETCH_ANSWERS` | No | `true` (default) also ingests each new question's answers — one extra API call per new question |
+| `ANSWER_FETCH_CONCURRENCY` | No | How many of those answer-fetch calls run concurrently (default 10) — the dominant lever for first-fetch wall-clock time; raise cautiously on a shared/on-prem instance |
 | `ENABLE_SCHEDULE` | No | `true` enables the automatic timed fetch |
 | `SCHEDULE_INTERVAL_HOURS` | No | Hours between scheduled fetches (default 24) |
 | `SCHEDULE_WINDOW_DAYS` | No | Look-back window for scheduled fetches |
