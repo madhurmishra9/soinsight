@@ -91,11 +91,16 @@ class SOClient:
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> SOClient:
+        # A configured CA bundle trusts an additional issuer (e.g. an on-prem
+        # instance's internal corporate CA); certificates are still verified
+        # either way -- httpx's own default (verify=True) is used otherwise.
+        verify: bool | str = settings.so_ca_bundle or True
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers=self._auth.headers(),
             params=self._auth.params(),
             timeout=self._timeout,
+            verify=verify,
         )
         return self
 

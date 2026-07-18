@@ -464,3 +464,56 @@ async def test_paginate_raw_list_response() -> None:
         items.extend(page)
 
     assert len(items) == 3
+
+
+# ---------------------------------------------------------------------------
+# TLS verification (__aenter__ wiring to app settings)
+# ---------------------------------------------------------------------------
+
+class _FakeAsyncClient:
+    """Captures the kwargs SOClient.__aenter__ passes to httpx.AsyncClient."""
+
+    last_kwargs: dict[str, object] = {}
+
+    def __init__(self, **kwargs: object) -> None:
+        _FakeAsyncClient.last_kwargs = kwargs
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_aenter_defaults_to_verify_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No CA bundle configured -> normal cert verification (verify=True), not disabled."""
+    monkeypatch.setattr("services.so_client.settings.so_ca_bundle", "")
+    monkeypatch.setattr("services.so_client.httpx.AsyncClient", _FakeAsyncClient)
+
+    auth = SOAuth(mode="api_key", api_key="k")
+    async with SOClient(base_url="https://so.example.com/api/v3", auth=auth):
+        pass
+
+    assert _FakeAsyncClient.last_kwargs["verify"] is True
+
+
+@pytest.mark.asyncio
+async def test_aenter_uses_configured_ca_bundle_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured CA bundle path is passed through as verify=<path> -- adds a
+    trusted issuer, never disables verification outright."""
+    monkeypatch.setattr(
+        "services.so_client.settings.so_ca_bundle", "/etc/ssl/certs/internal-ca.pem"
+    )
+    monkeypatch.setattr("services.so_client.httpx.AsyncClient", _FakeAsyncClient)
+
+    auth = SOAuth(mode="api_key", api_key="k")
+    async with SOClient(base_url="https://so.example.com/api/v3", auth=auth):
+        pass
+
+    assert _FakeAsyncClient.last_kwargs["verify"] == "/etc/ssl/certs/internal-ca.pem"
+
+
+@pytest.mark.asyncio
+async def test_aenter_returns_self() -> None:
+    auth = SOAuth(mode="api_key", api_key="k")
+    client = SOClient(base_url="https://so.example.com/api/v3", auth=auth)
+    async with client as entered:
+        assert entered is client

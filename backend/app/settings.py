@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     so_base_url: str = "https://your-instance.stackenterprise.co/api/v3"
     so_api_key: str = ""
     so_team: str = ""
+    # Path to a PEM file of extra CA certificate(s) to trust, for on-prem SO
+    # Enterprise instances behind an internal/corporate CA. Certificates are
+    # still validated -- this only adds a trusted issuer, it never disables
+    # verification. Blank (default) uses httpx's normal system trust store.
+    so_ca_bundle: str = ""
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
     default_tags: str = "cloudsql,cloudspanner,cloudstorage"

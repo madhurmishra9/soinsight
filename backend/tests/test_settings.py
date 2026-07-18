@@ -159,3 +159,68 @@ def test_test_connection_normalizes_reachable_shape(
     # "unknown" version normalized to None, not the literal string
     assert data["version"] is None
     assert data["scopes"] == ["Team A", "5"]
+
+
+def test_test_connection_survives_unexpected_exception(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unhandled bug/exception inside the SO client must degrade to
+    reachable=False, never bubble up as a 500 -- this is a health-check
+    endpoint that a flaky/misconfigured instance shouldn't be able to crash."""
+
+    class BoomClient:
+        def __init__(self, base_url: str, auth: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> BoomClient:
+            raise RuntimeError("unexpected boom")
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+    monkeypatch.setattr("routers.settings.SOClient", BoomClient)
+
+    client.post(
+        "/api/settings",
+        json={"base_url": "https://demo.stackenterprise.co/api/v3", "api_key": "k", "team": ""},
+    )
+    r = client.get("/api/settings/test")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["reachable"] is False
+    assert data["scopes"] == []
+    assert "boom" in data["error"]
+
+
+def test_test_connection_uses_get_not_bracket_access_for_ok(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conn dict missing the 'ok' key entirely must not raise a KeyError."""
+
+    class MissingOkClient:
+        def __init__(self, base_url: str, auth: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> MissingOkClient:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        async def test_connection(self) -> dict[str, Any]:
+            return {"version": "1.0"}  # no "ok" key
+
+        async def list_scopes(self) -> list[dict[str, Any]]:
+            return []
+
+    monkeypatch.setattr("routers.settings.SOClient", MissingOkClient)
+
+    client.post(
+        "/api/settings",
+        json={"base_url": "https://demo.stackenterprise.co/api/v3", "api_key": "k", "team": ""},
+    )
+    r = client.get("/api/settings/test")
+
+    assert r.status_code == 200
+    assert r.json()["reachable"] is False
