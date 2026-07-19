@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # still validated -- this only adds a trusted issuer, it never disables
     # verification. Blank (default) uses httpx's normal system trust store.
     so_ca_bundle: str = ""
+    # Opt-in escape hatch for instances with a self-signed/otherwise-untrusted
+    # cert that so_ca_bundle can't cover. Defaults to False (verification on);
+    # only takes effect when explicitly set true by whoever controls the
+    # deployment. Takes priority over so_ca_bundle when both are set.
+    so_insecure_skip_verify: bool = False
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
     default_tags: str = "cloudsql,cloudspanner,cloudstorage"

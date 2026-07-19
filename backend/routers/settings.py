@@ -128,7 +128,7 @@ async def test_connection() -> TestConnectionResponse:
         async with SOClient(base_url=_current_config["base_url"], auth=auth) as client:
             conn = await client.test_connection()
             scopes = await client.list_scopes() if conn.get("ok") else []
-    except Exception as exc:
+    except BaseException as exc:
         # Anything unexpected (a bug, a shape SOClient's own handling didn't
         # anticipate, a connection-level failure outside test_connection's own
         # try/except) must still report "unreachable", not a 500 -- this is a
