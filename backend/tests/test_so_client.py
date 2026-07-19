@@ -52,6 +52,19 @@ async def _client_with(transport: httpx.MockTransport) -> SOClient:
     return client
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Stub out _paginate's inter-page throttle so tests stay fast/deterministic;
+    exposes recorded delays for tests that want to assert on the throttle itself."""
+    calls: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        calls.append(seconds)
+
+    monkeypatch.setattr("services.so_client.asyncio.sleep", _fake_sleep)
+    return calls
+
+
 # ---------------------------------------------------------------------------
 # Auth header tests
 # ---------------------------------------------------------------------------
@@ -454,6 +467,33 @@ async def test_iter_questions_team_scoped_uses_team_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_paginate_sleeps_between_pages(_no_real_sleep: list[float]) -> None:
+    """A 0.3s throttle runs between pages of a multi-page fetch (rate-limit
+    courtesy to the SO instance), but not after the final page."""
+    page1 = {"items": [{"id": i} for i in range(100)], "has_more": True}
+    page2 = {"items": [{"id": i} for i in range(100, 150)], "has_more": False}
+
+    transport = _mock_transport(_make_response(page1), _make_response(page2))
+    client = await _client_with(transport)
+
+    async for _ in client._paginate("/questions"):
+        pass
+
+    assert _no_real_sleep == [0.3]
+
+
+@pytest.mark.asyncio
+async def test_paginate_no_sleep_after_single_page(_no_real_sleep: list[float]) -> None:
+    transport = _mock_transport(_make_response({"items": [], "has_more": False}))
+    client = await _client_with(transport)
+
+    async for _ in client._paginate("/tags"):
+        pass
+
+    assert _no_real_sleep == []
+
+
+@pytest.mark.asyncio
 async def test_paginate_raw_list_response() -> None:
     """_paginate handles an API that returns a plain list (not wrapped in {items:[]})."""
     transport = _mock_transport(_make_response([{"id": 1}, {"id": 2}, {"id": 3}]))
@@ -464,3 +504,89 @@ async def test_paginate_raw_list_response() -> None:
         items.extend(page)
 
     assert len(items) == 3
+
+
+# ---------------------------------------------------------------------------
+# TLS verification (__aenter__ wiring to app settings)
+# ---------------------------------------------------------------------------
+
+class _FakeAsyncClient:
+    """Captures the kwargs SOClient.__aenter__ passes to httpx.AsyncClient."""
+
+    last_kwargs: dict[str, object] = {}
+
+    def __init__(self, **kwargs: object) -> None:
+        _FakeAsyncClient.last_kwargs = kwargs
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_aenter_defaults_to_verify_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No CA bundle configured -> normal cert verification (verify=True), not disabled."""
+    monkeypatch.setattr("services.so_client.settings.so_ca_bundle", "")
+    monkeypatch.setattr("services.so_client.httpx.AsyncClient", _FakeAsyncClient)
+
+    auth = SOAuth(mode="api_key", api_key="k")
+    async with SOClient(base_url="https://so.example.com/api/v3", auth=auth):
+        pass
+
+    assert _FakeAsyncClient.last_kwargs["verify"] is True
+
+
+@pytest.mark.asyncio
+async def test_aenter_uses_configured_ca_bundle_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured CA bundle path is passed through as verify=<path> -- adds a
+    trusted issuer, never disables verification outright."""
+    monkeypatch.setattr(
+        "services.so_client.settings.so_ca_bundle", "/etc/ssl/certs/internal-ca.pem"
+    )
+    monkeypatch.setattr("services.so_client.httpx.AsyncClient", _FakeAsyncClient)
+
+    auth = SOAuth(mode="api_key", api_key="k")
+    async with SOClient(base_url="https://so.example.com/api/v3", auth=auth):
+        pass
+
+    assert _FakeAsyncClient.last_kwargs["verify"] == "/etc/ssl/certs/internal-ca.pem"
+
+
+@pytest.mark.asyncio
+async def test_aenter_insecure_skip_verify_disables_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The opt-in escape hatch, when explicitly enabled, disables cert checks."""
+    monkeypatch.setattr("services.so_client.settings.so_insecure_skip_verify", True)
+    monkeypatch.setattr("services.so_client.httpx.AsyncClient", _FakeAsyncClient)
+
+    auth = SOAuth(mode="api_key", api_key="k")
+    async with SOClient(base_url="https://so.example.com/api/v3", auth=auth):
+        pass
+
+    assert _FakeAsyncClient.last_kwargs["verify"] is False
+
+
+@pytest.mark.asyncio
+async def test_aenter_insecure_skip_verify_overrides_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """so_insecure_skip_verify takes priority when both it and a CA bundle are set."""
+    monkeypatch.setattr("services.so_client.settings.so_insecure_skip_verify", True)
+    monkeypatch.setattr(
+        "services.so_client.settings.so_ca_bundle", "/etc/ssl/certs/internal-ca.pem"
+    )
+    monkeypatch.setattr("services.so_client.httpx.AsyncClient", _FakeAsyncClient)
+
+    auth = SOAuth(mode="api_key", api_key="k")
+    async with SOClient(base_url="https://so.example.com/api/v3", auth=auth):
+        pass
+
+    assert _FakeAsyncClient.last_kwargs["verify"] is False
+
+
+@pytest.mark.asyncio
+async def test_aenter_returns_self() -> None:
+    auth = SOAuth(mode="api_key", api_key="k")
+    client = SOClient(base_url="https://so.example.com/api/v3", auth=auth)
+    async with client as entered:
+        assert entered is client

@@ -12,6 +12,7 @@ IMPORTANT — Swagger verification required before first real run:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
@@ -91,11 +92,24 @@ class SOClient:
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> SOClient:
+        # Priority: explicit skip-verify (opt-in, logged) > a configured CA
+        # bundle (trusts an additional issuer, cert still checked) > httpx's
+        # own default (verify=True).
+        verify: bool | str
+        if settings.so_insecure_skip_verify:
+            log.warning(
+                "so_tls_verification_disabled",
+                detail="so_insecure_skip_verify=true -- TLS cert checks are OFF for this client",
+            )
+            verify = False
+        else:
+            verify = settings.so_ca_bundle or True
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers=self._auth.headers(),
             params=self._auth.params(),
             timeout=self._timeout,
+            verify=verify,
         )
         return self
 
@@ -157,6 +171,12 @@ class SOClient:
             if not has_more:
                 break
             page += 1
+            # Throttle between pages of the *same* paginated call. Concurrent
+            # answer fetches (services/ingestion.py) each run their own
+            # _paginate loop in a separate task bounded by a semaphore, so
+            # this sleep runs in parallel across those tasks -- it does not
+            # re-serialize the concurrent fetching added there.
+            await asyncio.sleep(0.3)
 
     # ------------------------------------------------------------------
     # Public API
