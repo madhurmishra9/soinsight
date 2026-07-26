@@ -18,9 +18,7 @@ import structlog
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from app.dates import utcnow
-
-from app.dates import resolve_range
+from app.dates import resolve_range, utcnow
 from app.models import Classification, Pattern, Question, Run
 from app.taxonomy import RECOMMENDATION_MATRIX
 
@@ -230,7 +228,10 @@ class AggregatorService:
             category_distribution=self._compute_distribution(signal_cls, q_by_id),
             patterns=self._compute_patterns(signal_cls, q_by_id, tag, window_days),
             technical_ratio=_compute_technical_ratio(questions),
-            trend=self._compute_trend(signal_cls, q_by_id, window_days, len(signal_cls)),
+            trend=self._compute_trend(
+                signal_cls, q_by_id, window_days, len(signal_cls),
+                since=since, until=until,
+            ),
         )
 
     # ── Distribution ──────────────────────────────────────────────────────────
@@ -323,19 +324,28 @@ class AggregatorService:
         q_by_id: dict[int, Question],
         window_days: int,
         total_count: int,
+        since: datetime | None = None,
+        until: datetime | None = None,
         _now: datetime | None = None,
     ) -> str | None:
         """
-        Split window in half; compare second-half vs first-half signal question counts.
+        Split the window in half; compare second-half vs first-half signal counts.
         Returns None when total_count < min_trend_volume (volume guard suppresses
         unreliable spike detection).
-        _now is injectable for deterministic tests.
+
+        The split is anchored to the *aggregation window* (since/until), not to
+        wall-clock now. Anchoring to now put the midpoint far past the end of a
+        historical from_date/to_date range, so every question landed in the
+        "first half" and any custom range reported "decreasing" regardless of
+        its real shape. since/until/_now are all injectable for deterministic
+        tests; _now is the legacy alias for the window end.
         """
         if total_count < self._min_trend:
             return None
 
-        now = _now or utcnow()
-        halfway = now - timedelta(days=window_days // 2)
+        window_end = until or _now or utcnow()
+        window_start = since or (window_end - timedelta(days=window_days))
+        halfway = window_start + (window_end - window_start) / 2
 
         first_count = 0
         second_count = 0

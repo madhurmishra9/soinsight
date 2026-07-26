@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from routers import analysis as a_router
 from routers import questions as q_router
 from routers import remediation as r_router
 
@@ -38,3 +39,32 @@ async def test_remediation_stream_removes_queue_when_done() -> None:
     await _drain(resp)
 
     assert run_id not in r_router._run_queues
+
+
+async def test_analysis_stream_removes_queue_when_done() -> None:
+    """The analysis stream was the one router still missing this cleanup."""
+    run_id = "test-analysis-run"
+    queue: asyncio.Queue = asyncio.Queue()
+    a_router._run_queues[run_id] = queue
+    await queue.put({"type": "tag_start", "tag": "x"})
+    await queue.put(None)
+
+    resp = await a_router.stream_analysis(run_id=run_id)
+    await _drain(resp)
+
+    assert run_id not in a_router._run_queues
+
+
+async def test_analysis_stream_removes_queue_on_client_disconnect() -> None:
+    """An abandoned stream (client hung up mid-run) must not leak either."""
+    run_id = "test-analysis-abandoned"
+    queue: asyncio.Queue = asyncio.Queue()
+    a_router._run_queues[run_id] = queue
+    await queue.put({"type": "tag_start", "tag": "x"})
+
+    resp = await a_router.stream_analysis(run_id=run_id)
+    gen = resp.body_iterator
+    await gen.__anext__()          # consume one event, then walk away
+    await gen.aclose()             # what Starlette does on disconnect
+
+    assert run_id not in a_router._run_queues

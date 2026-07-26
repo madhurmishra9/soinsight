@@ -138,11 +138,17 @@ async def stream_analysis(run_id: str) -> StreamingResponse:
         raise HTTPException(status_code=404, detail=f"run_id {run_id!r} not found")
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        while True:
-            event = await queue.get()
-            if event is None:
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                break
-            yield f"data: {json.dumps(event)}\n\n"
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            # Drop the queue whether the stream completed normally or the client
+            # disconnected; otherwise _run_queues grows unbounded over time.
+            # (The /questions and /remediation streams already do this.)
+            _run_queues.pop(run_id, None)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

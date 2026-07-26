@@ -278,6 +278,82 @@ async def test_trigger_returns_202_status(engine: Any) -> None:
     mock_svc.trigger_now.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_trigger_task_reference_is_retained(engine: Any) -> None:
+    """The background trigger task must be strongly referenced while in flight.
+
+    The event loop only keeps weak references to tasks, so a fire-and-forget
+    create_task() whose result is dropped can be garbage-collected mid-run.
+    """
+    with Session(engine) as session:
+        session.add(ScheduleConfig(
+            enabled=True, products='["p"]', interval_hours=24, window_days=30,
+        ))
+        session.commit()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_trigger() -> None:
+        started.set()
+        await release.wait()
+
+    mock_svc = MagicMock()
+    mock_svc.trigger_now = _slow_trigger
+    set_scheduler(mock_svc)
+
+    sched_router._trigger_tasks.clear()
+    await trigger_now()
+    await started.wait()
+
+    # Still running → still referenced, so it can't be collected.
+    assert len(sched_router._trigger_tasks) == 1
+
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # Completed → reference dropped, no unbounded growth.
+    assert len(sched_router._trigger_tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_trigger_task_failure_is_logged_not_swallowed(
+    engine: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trigger that raises must surface in the logs, not vanish silently.
+
+    Without the done-callback the exception only appears as an unretrieved-task
+    warning at GC time, long after the endpoint reported success.
+    """
+    with Session(engine) as session:
+        session.add(ScheduleConfig(
+            enabled=True, products='["p"]', interval_hours=24, window_days=30,
+        ))
+        session.commit()
+
+    errors: list[tuple[str, dict[str, Any]]] = []
+
+    class _RecordingLog:
+        def error(self, event: str, **kw: Any) -> None:
+            errors.append((event, kw))
+
+        def info(self, event: str, **kw: Any) -> None:
+            pass
+
+    monkeypatch.setattr(sched_router, "log", _RecordingLog())
+
+    mock_svc = MagicMock()
+    mock_svc.trigger_now = AsyncMock(side_effect=ValueError("no products configured"))
+    set_scheduler(mock_svc)
+
+    await trigger_now()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert [e for e, _ in errors] == ["schedule_trigger_failed"]
+    assert "no products configured" in errors[0][1]["error"]
+
+
 # ── SchedulerService._get_unclassified ────────────────────────────────────────
 
 

@@ -21,10 +21,35 @@ router = APIRouter(prefix="/api/schedule", tags=["schedule"])
 # Injected by main.py after the SchedulerService is started.
 _scheduler: Any = None
 
+# Strong references to in-flight manual-trigger tasks. The event loop only holds
+# weak references to tasks, so a bare `asyncio.create_task(...)` whose result is
+# discarded can be garbage-collected mid-run; keeping the reference until the
+# task completes is what keeps a triggered refresh alive to the end.
+_trigger_tasks: set[asyncio.Task[None]] = set()
+
 
 def set_scheduler(svc: Any) -> None:
     global _scheduler
     _scheduler = svc
+
+
+def _spawn_trigger(coro: Any) -> asyncio.Task[None]:
+    """Run *coro* in the background, holding a reference and surfacing errors."""
+    task: asyncio.Task[None] = asyncio.create_task(coro)
+    _trigger_tasks.add(task)
+    task.add_done_callback(_trigger_tasks.discard)
+
+    def _log_failure(t: asyncio.Task[None]) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            # Without this the exception is only surfaced as an unretrieved-task
+            # warning at GC time, long after the trigger appeared to succeed.
+            log.error("schedule_trigger_failed", error=str(exc), exc_info=exc)
+
+    task.add_done_callback(_log_failure)
+    return task
 
 
 # ── Request / response models ─────────────────────────────────────────────────
@@ -129,7 +154,7 @@ async def trigger_now() -> dict[str, str]:
     if _scheduler is None:
         raise HTTPException(status_code=503, detail="Scheduler service not initialised.")
 
-    asyncio.create_task(_scheduler.trigger_now())
+    _spawn_trigger(_scheduler.trigger_now())
     return {"status": "triggered"}
 
 

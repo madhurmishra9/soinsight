@@ -419,6 +419,53 @@ def test_trend_none_when_no_first_half_data() -> None:
     assert trend is None
 
 
+def test_trend_splits_on_window_not_wall_clock() -> None:
+    """The half-split is anchored to the given since/until window.
+
+    Regression: the split used to be anchored to utcnow(), so for a historical
+    range the midpoint landed far past the window's end, every question fell in
+    the "first half", and the trend came back "decreasing" no matter what.
+    """
+    svc = AggregatorService(min_trend_volume=5)
+    since = datetime(2024, 1, 1)
+    until = datetime(2024, 1, 31)
+    mid = since + (until - since) / 2
+    # 3 before the midpoint, 3 after → genuinely "stable".
+    qs = {
+        1: _make_q(1, created_at=mid - timedelta(days=10)),
+        2: _make_q(2, created_at=mid - timedelta(days=6)),
+        3: _make_q(3, created_at=mid - timedelta(days=2)),
+        4: _make_q(4, created_at=mid + timedelta(days=2)),
+        5: _make_q(5, created_at=mid + timedelta(days=6)),
+        6: _make_q(6, created_at=mid + timedelta(days=10)),
+    }
+    cls = [_make_cls(i, "Technical", "Performance or scaling issues") for i in range(1, 7)]
+
+    trend = svc._compute_trend(cls, qs, 30, total_count=6, since=since, until=until)
+    assert trend == "stable"
+
+
+@pytest.mark.asyncio
+async def test_run_historical_range_does_not_report_false_decreasing() -> None:
+    """End-to-end: a flat historical from_date/to_date range reports 'stable'."""
+    engine = _make_engine()
+    start = datetime(2024, 1, 1)
+    with Session(engine) as session:
+        for i in range(20):
+            # 10 questions in the first half of January, 10 in the second half.
+            offset = i if i < 10 else i + 6
+            q = _insert_q(session, so_id=500 + i, author_id=i, tags=["python"],
+                          created_at=start + timedelta(days=offset))
+            _insert_cls(session, q.id, "Technical", "Performance or scaling issues")
+
+    svc = AggregatorService(min_trend_volume=5)
+    results = await svc.run(
+        ["python"], 30, engine, from_date="2024-01-01", to_date="2024-01-31"
+    )
+    assert results[0].total_questions == 20
+    assert results[0].trend == "stable"
+
+
 # ─── Pattern persistence (integration) ───────────────────────────────────────
 
 @pytest.mark.asyncio
