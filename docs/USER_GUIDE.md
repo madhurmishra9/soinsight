@@ -394,7 +394,7 @@ Leave **Tags** empty to cover every tag present in the range.
 | **Answered, still unresolved** | Has at least one answer, none accepted. Often a sharper signal of unresolved pain than the raw answered count. | ✔ |
 | **Avg. answers / question** | Engagement per question. | — |
 | **Avg. views / question** | Interest per question. | — |
-| **Time to first answer** | Mean (and median, in the sub-label) hours from creation to the earliest *captured* answer. | ✔ |
+| **Time to first answer** | Mean (and median, in the sub-label) hours from creation to the earliest *captured* answer. Pairs where the answer is dated before its own question are dropped — see below. | ✔ |
 | **Skipped / missing** | Fetched but with no classification row yet. Run Analysis for these tags and window to close the gap. When it's zero you get a green "analysis is fully caught up" banner instead. | ✔ |
 
 Clicking a metric opens a side drawer listing the exact questions behind it,
@@ -406,6 +406,17 @@ additionally badges each question with how long it took.
 fetched.** A question with `answer_count > 0` but no stored answer rows is
 excluded rather than skewing the average. If this reads `—`, you likely have
 `FETCH_ANSWERS` disabled.
+
+Also excluded: questions whose earliest stored answer is dated *before* the
+question itself. That means one of the two timestamps is unusable — an
+unparseable date falls back to "now" during ingestion — so the pair is dropped
+instead of contributing a negative duration. The drill-down applies the same
+rule, so the drawer never lists a question the average ignored.
+
+**"Answered, still unresolved" is counted directly**, not as
+`answered − accepted`. Some instances report a question as having an accepted
+answer while its `answer_count` reads `0` (the two come from different SO
+fields), and the subtraction would then produce a negative count.
 
 **Tag-wise breakdown** repeats the totals per tag, plus Accepted and Time to
 answer, so you can see at a glance which product's data is stale, incomplete, or
