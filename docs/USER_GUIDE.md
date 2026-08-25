@@ -615,6 +615,7 @@ retry/backoff apply unchanged either way.
 | **Tags shown in red** | Not found on your instance — check spelling. Tags that merely couldn't be verified stay the normal colour. |
 | **Tag dropdown says it can't reach Stack Overflow** | Check Settings → Test connection. Manual tag entry still works meanwhile. |
 | **Tag suggestions returns nothing** | The cached tag index is empty — browse or validate a tag on the Fetch page to prime it. Or your threshold is too high, or you already track everything above it. |
+| **Tags look wrong right after switching instances** | The tag index is cached per instance *and* scope, so changing the Base URL or Team starts a fresh cache rather than reusing the previous instance's tags. Use the refresh button in the Browse tags panel to force a re-fetch sooner than the 10-minute TTL. |
 | **Time to first answer shows `—`** | No answer bodies captured. Enable `FETCH_ANSWERS` and re-fetch. |
 | **Remediation cards all say "not grounded"** | The model couldn't tie its output to real sources — usually because no answers were captured. Enable `FETCH_ANSWERS`, re-fetch, then Regenerate all. |
 | **Sub-category chart / Top issues show fewer than expected** | Both cap at the top 8 by volume. If fewer appear, fewer than 8 distinct categories exist for that product and window. |

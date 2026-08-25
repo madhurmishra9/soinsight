@@ -34,8 +34,10 @@ export function connectSSE(
     }
 
     if (data.type === 'done') {
-      onDone()
+      // Close before the callback: if onDone throws, an open EventSource would
+      // otherwise keep auto-reconnecting to a stream the server has torn down.
       es.close()
+      onDone()
       return
     }
 

@@ -107,7 +107,11 @@ def coverage(
 
 _TAG_TTL = timedelta(minutes=10)
 _TAG_FETCH_CAP = 20000
-# team-slug ("" for none) → {"tags": dict[str, int], "at": datetime, "ok": bool}
+# "<base_url>|<team-slug>" → {"tags": dict[str, int], "at": datetime, "ok": bool}
+#
+# The instance URL is part of the key, not just the team: pointing Settings at a
+# different instance must not keep validating tags against the previous one for
+# the rest of the TTL.
 _tag_index_cache: dict[str, dict[str, Any]] = {}
 
 
@@ -117,8 +121,15 @@ class TagValidation(BaseModel):
     question_count: int | None = None
 
 
+def tag_cache_key(base_url: str, team: str | None) -> str:
+    """Cache key for one instance+scope pair. Exported so callers and tests
+    build it the same way instead of duplicating the format."""
+    return f"{base_url}|{team or ''}"
+
+
 async def _load_tag_index(team: str | None, force: bool = False) -> dict[str, Any]:
-    key = team or ""
+    base_url = _current_config.get("base_url") or settings.so_base_url
+    key = tag_cache_key(base_url, team)
     cached = _tag_index_cache.get(key)
     if (
         not force
@@ -128,7 +139,6 @@ async def _load_tag_index(team: str | None, force: bool = False) -> dict[str, An
     ):
         return cached
 
-    base_url = _current_config.get("base_url") or settings.so_base_url
     api_key = _current_config.get("api_key") or settings.so_api_key
     auth = SOAuth(mode="bearer", api_key=api_key or None)
 

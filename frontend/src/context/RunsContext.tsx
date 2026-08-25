@@ -353,7 +353,14 @@ export function RunsProvider({ children }: { children: ReactNode }) {
       },
       (msg) => {
         appendRemediationLog({ ts: now(), msg: `Error: ${msg}`, kind: 'error' })
-        setRemediation((prev) => ({ ...prev, running: false, error: msg }))
+        // Still bump completedToken: clusters finished before the failure were
+        // already persisted, so the dashboard should pick up whatever landed.
+        setRemediation((prev) => ({
+          ...prev,
+          running: false,
+          error: msg,
+          completedToken: prev.completedToken + 1,
+        }))
       },
     )
   }

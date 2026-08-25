@@ -22,11 +22,18 @@ interface QuestionDrawerProps {
   noise?: boolean
 }
 
-/** Strip HTML tags so SO answer bodies render as readable plain text. */
+/** Strip HTML tags so SO answer bodies render as readable plain text.
+ *
+ *  Answer bodies arrive as raw HTML from the Stack Overflow instance. Parsing
+ *  them by assigning to `innerHTML` — even on a detached element — still runs
+ *  the HTML parser over untrusted markup, and browsers fetch referenced
+ *  resources for nodes it creates, so `<img src=x onerror=…>` in an answer body
+ *  can fire. DOMParser instead produces an inert document: no resource loads,
+ *  no script execution, no event handlers.
+ */
 function stripHtml(html: string): string {
-  const tmp = document.createElement('div')
-  tmp.innerHTML = html
-  return (tmp.textContent || tmp.innerText || '').trim()
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  return (doc.body.textContent ?? '').trim()
 }
 
 function AnswerList({ q }: { q: QuestionRef }) {
