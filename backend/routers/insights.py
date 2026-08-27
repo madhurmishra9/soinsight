@@ -925,17 +925,32 @@ def _first_answer_at(so_ids: list[int], session: Session) -> dict[int, datetime]
     return dict(rows)
 
 
+def _has_measurable_answer_time(
+    question: Question, first_answer_at: dict[int, datetime]
+) -> bool:
+    """Whether *question* contributes to the time-to-answer metrics.
+
+    Requires a captured answer and a non-negative delta — a first answer dated
+    before its own question means one of the two timestamps is unusable (an
+    unparseable date falls back to "now" during ingestion), so the pair is
+    dropped rather than allowed to skew the average. /metrics/questions applies
+    this same predicate, so the drill-down can never list a question the
+    headline number excluded.
+    """
+    first_at = first_answer_at.get(question.so_id)
+    if first_at is None or question.created_at is None:
+        return False
+    return (first_at - question.created_at).total_seconds() >= 0
+
+
 def _time_to_answer_hours(
     questions: list[Question], first_answer_at: dict[int, datetime]
 ) -> list[float]:
     deltas: list[float] = []
     for q in questions:
-        first_at = first_answer_at.get(q.so_id)
-        if first_at is None or q.created_at is None:
+        if not _has_measurable_answer_time(q, first_answer_at):
             continue
-        hours = (first_at - q.created_at).total_seconds() / 3600
-        if hours >= 0:
-            deltas.append(hours)
+        deltas.append((first_answer_at[q.so_id] - q.created_at).total_seconds() / 3600)
     return deltas
 
 
@@ -993,7 +1008,13 @@ async def get_metrics(
         ))
 
     accepted = sum(1 for q in questions if q.has_accepted)
-    not_accepted = answered - accepted
+    # Counted directly rather than as (answered - accepted): an instance can
+    # report a question as having an accepted answer while its answer_count
+    # reads 0 (the two come from different SO fields), and the subtraction then
+    # produces a negative "answered, still unresolved" count. This predicate is
+    # the one /metrics/questions?bucket=not_accepted uses, so the drill-down and
+    # the headline number always agree.
+    not_accepted = sum(1 for q in questions if q.answer_count > 0 and not q.has_accepted)
     acceptance_rate = round(accepted / answered, 3) if answered else None
     avg_answers = round(sum(q.answer_count for q in questions) / total, 2) if total else None
     avg_views = round(sum(q.view_count for q in questions) / total, 1) if total else None
@@ -1128,7 +1149,7 @@ async def get_metric_questions(
     elif bucket == "not_accepted":
         selected = [q for q in questions if q.answer_count > 0 and not q.has_accepted]
     else:  # answered_with_time
-        selected = [q for q in questions if q.so_id in first_answer_at]
+        selected = [q for q in questions if _has_measurable_answer_time(q, first_answer_at)]
 
     if bucket == "answered_with_time":
         selected = sorted(

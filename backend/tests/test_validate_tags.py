@@ -77,9 +77,17 @@ def test_validate_tags_empty_returns_empty() -> None:
     assert _client().get("/api/questions/validate-tags", params={"tags": ""}).json() == []
 
 
+def _warm_cache(tags: dict[str, int], team: str | None = None) -> str:
+    """Pre-warm the tag index for whatever instance the router will resolve to."""
+    base_url = rq._current_config.get("base_url") or rq.settings.so_base_url
+    key = rq.tag_cache_key(base_url, team)
+    rq._tag_index_cache[key] = {"tags": tags, "at": datetime.utcnow(), "ok": True}
+    return key
+
+
 def test_validate_tags_uses_cache_without_refetch(monkeypatch: pytest.MonkeyPatch) -> None:
     # Pre-warm a fresh, ok cache; the client must NOT be called even if it would raise.
-    rq._tag_index_cache[""] = {"tags": {"python": 7}, "at": datetime.utcnow(), "ok": True}
+    _warm_cache({"python": 7})
 
     def _boom(**_kw: Any) -> _FakeClient:
         raise AssertionError("SOClient should not be constructed when cache is fresh")
@@ -89,3 +97,25 @@ def test_validate_tags_uses_cache_without_refetch(monkeypatch: pytest.MonkeyPatc
     by_tag = {v["tag"]: v["status"] for v in r.json()}
     assert by_tag["python"] == "available"
     assert by_tag["ruby"] == "unavailable"
+
+
+def test_cache_is_not_shared_across_instances(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pointing Settings at a different instance must re-fetch rather than keep
+    validating against the previous instance's tag list for the rest of the TTL."""
+    _warm_cache({"python": 7})
+    original = rq._current_config.get("base_url")
+    try:
+        rq._current_config["base_url"] = "https://other-instance.example.com/api/v3"
+        monkeypatch.setattr(
+            rq, "SOClient", lambda **_kw: _FakeClient(tags=[{"name": "ruby", "questionCount": 3}])
+        )
+        r = _client().get("/api/questions/validate-tags", params={"tags": "python,ruby"})
+        by_tag = {v["tag"]: v["status"] for v in r.json()}
+        # "python" belonged to the OLD instance only — it must not leak through.
+        assert by_tag["python"] == "unavailable"
+        assert by_tag["ruby"] == "available"
+    finally:
+        if original is None:
+            rq._current_config.pop("base_url", None)
+        else:
+            rq._current_config["base_url"] = original

@@ -353,7 +353,14 @@ export function RunsProvider({ children }: { children: ReactNode }) {
       },
       (msg) => {
         appendRemediationLog({ ts: now(), msg: `Error: ${msg}`, kind: 'error' })
-        setRemediation((prev) => ({ ...prev, running: false, error: msg }))
+        // Still bump completedToken: clusters finished before the failure were
+        // already persisted, so the dashboard should pick up whatever landed.
+        setRemediation((prev) => ({
+          ...prev,
+          running: false,
+          error: msg,
+          completedToken: prev.completedToken + 1,
+        }))
       },
     )
   }
@@ -424,18 +431,52 @@ export function RunsProvider({ children }: { children: ReactNode }) {
   )
 }
 
+/** Render one ingestion SSE event as a readable log line.
+ *
+ *  Ingestion emits `progress` events shaped {type, tag, inserted, skipped} —
+ *  with no `message` key — plus a per-tag wrap-up carrying tag_done/tag_inserted/
+ *  tag_skipped, and {type, message} for info/warning. Reading `ev.message` off a
+ *  progress event therefore found nothing and dumped the raw JSON of the most
+ *  common event type straight into the user's progress log.
+ */
 function fetchEventToEntry(ev: SseEvent): LogEntry {
-  if (ev.type === 'progress') {
-    return { ts: now(), msg: String(ev.message ?? JSON.stringify(ev)), kind: 'info' }
+  const stamp = now()
+
+  if (ev.type === 'tag_start') {
+    return { ts: stamp, msg: `▶ Fetching tag: ${String(ev.tag)}`, kind: 'info' }
   }
+
+  if (ev.type === 'progress') {
+    const tag = String(ev.tag ?? '')
+    if (ev.tag_done) {
+      const added = Number(ev.tag_inserted ?? 0)
+      const known = Number(ev.tag_skipped ?? 0)
+      return {
+        ts: stamp,
+        msg: `✓ ${tag}: ${added} new, ${known} already stored`,
+        kind: 'info',
+      }
+    }
+    return {
+      ts: stamp,
+      msg: `  ${tag}: ${Number(ev.inserted ?? 0)} new, ${Number(ev.skipped ?? 0)} already stored…`,
+      kind: 'info',
+    }
+  }
+
+  if (ev.type === 'info') {
+    return { ts: stamp, msg: String(ev.message ?? ''), kind: 'info' }
+  }
+
+  if (ev.type === 'warning') {
+    return { ts: stamp, msg: `⚠ ${String(ev.message ?? '')}`, kind: 'error' }
+  }
+
   const detail = Object.entries(ev)
     .filter(([k]) => k !== 'type')
     .map(([k, v]) => `${k}=${String(v)}`)
     .join(' ')
-  if (ev.type === 'tag_done' || ev.type === 'page_done') {
-    return { ts: now(), msg: detail, kind: 'info' }
-  }
-  return { ts: now(), msg: `[${ev.type}] ${detail}`, kind: 'info' }
+  return { ts: stamp, msg: `[${ev.type}] ${detail}`, kind: 'info' }
 }
 
 export const useRuns = () => useContext(RunsContext)

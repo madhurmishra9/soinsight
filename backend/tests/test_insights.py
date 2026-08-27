@@ -852,3 +852,94 @@ def test_report_markdown_without_remediations_has_no_guide(seeded_client: TestCl
     # The default seeded client has no Remediation rows.
     md = seeded_client.get("/api/insights/report?product=python&window=30&format=md").text
     assert "## Remediation Guide" not in md
+
+
+# ─── Metrics ↔ drill-down consistency (regressions) ───────────────────────────
+
+
+@pytest.fixture
+def skewed_client() -> TestClient:
+    """Two data shapes the Metrics tab used to report inconsistently:
+
+    q1 — the instance reports an accepted answer while answer_count reads 0
+         (the two come from different SO fields, so they can disagree).
+    q2 — its first stored answer predates the question itself, which happens
+         when an unparseable question date falls back to "now" at ingest time.
+    """
+    engine = _make_engine()
+    with Session(engine) as s:
+        # Two of these, so (answered - accepted) is genuinely negative (1 - 2).
+        for so_id in (801, 803):
+            s.add(Question(
+                so_id=so_id, title="accepted but zero answer_count", body="b",
+                tags=json.dumps(["skew"]), score=0, view_count=0, created_at=_RECENT,
+                author_id=1, answer_count=0, has_accepted=True,
+            ))
+        s.add(Question(
+            so_id=802, title="answer predates question", body="b",
+            tags=json.dumps(["skew"]), score=0, view_count=0, created_at=_RECENT,
+            author_id=2, answer_count=1, has_accepted=False,
+        ))
+        s.commit()
+        s.add(Answer(
+            so_id=8002, question_so_id=802, body="a", score=1, is_accepted=False,
+            author_id=9, created_at=_RECENT - timedelta(hours=6),
+        ))
+        s.commit()
+
+    app = FastAPI()
+    app.include_router(insights_router)
+
+    def override() -> Any:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override
+    return TestClient(app)
+
+
+def test_not_accepted_is_never_negative(skewed_client: TestClient) -> None:
+    """`not_accepted` used to be (answered - accepted), which goes negative when
+    a question is flagged accepted but reports answer_count 0."""
+    data = skewed_client.get("/api/insights/metrics?tags=skew&window=30").json()
+    assert data["accepted"] == 2      # q801 + q803, despite answer_count 0
+    assert data["answered"] == 1      # q802 only
+    # The old (answered - accepted) would be 1 - 2 = -1 here. Counted directly,
+    # q802 is the one genuinely answered-but-unaccepted question.
+    assert data["not_accepted"] == 1
+    assert data["not_accepted"] >= 0
+
+
+def test_not_accepted_matches_its_drill_down(skewed_client: TestClient) -> None:
+    data = skewed_client.get("/api/insights/metrics?tags=skew&window=30").json()
+    rows = skewed_client.get(
+        "/api/insights/metrics/questions",
+        params={"bucket": "not_accepted", "tags": "skew", "window": 30},
+    ).json()
+    assert len(rows) == data["not_accepted"]
+
+
+def test_time_to_answer_drill_down_matches_the_metric(skewed_client: TestClient) -> None:
+    """An answer dated before its question is excluded from the mean, so it must
+    be excluded from the drawer behind that same number too."""
+    data = skewed_client.get("/api/insights/metrics?tags=skew&window=30").json()
+    rows = skewed_client.get(
+        "/api/insights/metrics/questions",
+        params={"bucket": "answered_with_time", "tags": "skew", "window": 30},
+    ).json()
+    assert data["mean_time_to_answer_hours"] is None
+    assert rows == []
+
+
+def test_time_to_answer_drill_down_still_lists_valid_pairs(
+    engagement_client: TestClient,
+) -> None:
+    """The guard must not drop legitimate questions: the engagement fixture has
+    two measurable pairs (2h and 10h) behind a 6.0h mean."""
+    data = engagement_client.get("/api/insights/metrics?tags=ruby&window=30").json()
+    rows = engagement_client.get(
+        "/api/insights/metrics/questions",
+        params={"bucket": "answered_with_time", "tags": "ruby", "window": 30},
+    ).json()
+    assert data["mean_time_to_answer_hours"] == pytest.approx(6.0)
+    assert len(rows) == 2
