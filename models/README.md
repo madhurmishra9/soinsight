@@ -61,6 +61,34 @@ OLLAMA_MODEL=soinsight-classifier
 Changing the model also invalidates cached remediation guides — their content
 hash includes the model name — so the next **Update guide** regenerates them.
 
+## Tune the pipeline to the model
+
+Two settings in `backend/.env` matter as much as the model itself:
+
+```bash
+CLASSIFY_BATCH_SIZE=8       # questions per prompt — try 8 with a 3B, 20 with an 8B
+REMEDIATION_MODEL=          # blank = same model as classification
+```
+
+**`CLASSIFY_BATCH_SIZE`** trades throughput against a small model's ability to
+hold a long output list together. A batch of 20 asks for 20 JSON objects in one
+reply; smaller models lose count. Results are matched back by the `index` each
+object carries, so a miscount now costs a retry rather than mislabelling — but
+shorter lists mean fewer retries in the first place. Larger batches re-send the
+~2,300-token taxonomy and few-shot prefix less often.
+
+**`REMEDIATION_MODEL`** splits the two jobs. Classification is thousands of short
+structured calls and wants speed; the remediation guide is a handful of long-form
+reasoning calls and wants quality. Pairing a 3B classifier with a 7B remediation
+model gets most of the quality for little of the runtime:
+
+```bash
+OLLAMA_MODEL=soinsight-classifier
+REMEDIATION_MODEL=qwen2.5:7b-instruct
+```
+
+Leave `REMEDIATION_MODEL` blank to use one model for both.
+
 ## Choosing a base
 
 | Base | Size | Notes |

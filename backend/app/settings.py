@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     so_insecure_skip_verify: bool = False
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
+    # Model used for the remediation guide. Blank = use ollama_model. Remediation
+    # is a handful of long-form reasoning calls per run, while classification is
+    # thousands of short structured ones — so a small, fast classifier can be
+    # paired with a larger model here without slowing the pipeline down.
+    remediation_model: str = ""
+    # Questions per classification prompt. Smaller batches produce shorter output
+    # lists, which small models are far less likely to miscount; larger batches
+    # re-send the taxonomy and few-shot prefix less often. 8 or so suits a 3B
+    # model, 20 suits an 8B one.
+    classify_batch_size: int = 20
     default_tags: str = "cloudsql,cloudspanner,cloudstorage"
     # When true, ingestion also pulls each new question's answers (one extra
     # API call per newly-inserted question that reports answer_count > 0).

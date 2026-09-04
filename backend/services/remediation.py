@@ -58,6 +58,16 @@ _UNGROUNDED_NOTE = (
 )
 
 
+def _model_name() -> str:
+    """Model for remediation: the dedicated setting if set, else the shared one.
+
+    Read at call time, not import time, so switching models in Settings takes
+    effect without a restart. The name also feeds the stored content hash, so a
+    change here correctly invalidates cached guides.
+    """
+    return settings.remediation_model or settings.ollama_model
+
+
 def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TimeoutException):
         return True
@@ -173,7 +183,7 @@ class RemediationService:
                     r = await http.post(
                         f"{self._ollama_url}/api/generate",
                         json={
-                            "model": settings.ollama_model,
+                            "model": _model_name(),
                             "prompt": prompt,
                             "format": "json",
                             "stream": False,
@@ -344,7 +354,7 @@ class RemediationService:
         unchanged (same content hash), so re-running is cheap.
         Always puts a None sentinel on the queue when done.
         """
-        model = settings.ollama_model
+        model = _model_name()
         generated = 0
         try:
             for product in products:
