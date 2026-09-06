@@ -258,3 +258,22 @@ async def test_grounded_on_questions_without_answers() -> None:
     assert r.grounded is True
     assert json.loads(r.evidence_answer_so_ids) == []   # dropped, none real
     assert len(json.loads(r.evidence_question_so_ids)) == 3
+
+
+# ─── Model selection ──────────────────────────────────────────────────────────
+
+
+def test_remediation_uses_shared_model_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.remediation import _model_name
+    monkeypatch.setattr("services.remediation.settings.ollama_model", "shared:8b")
+    monkeypatch.setattr("services.remediation.settings.remediation_model", "")
+    assert _model_name() == "shared:8b"
+
+
+def test_remediation_model_overrides_shared_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lets a small, fast classifier be paired with a larger model for the few
+    long-form remediation calls."""
+    from services.remediation import _model_name
+    monkeypatch.setattr("services.remediation.settings.ollama_model", "small:3b")
+    monkeypatch.setattr("services.remediation.settings.remediation_model", "big:7b")
+    assert _model_name() == "big:7b"

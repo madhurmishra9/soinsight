@@ -22,6 +22,7 @@ from services.classifier import (
     _NOISE_SUB_DUPLICATE,
     _NOISE_SUB_INVALID,
     ClassifierService,
+    _align_batch,
     _build_batch_prompt,
     _build_single_prompt,
     _parse_single,
@@ -608,3 +609,122 @@ async def test_batch_http_failure_falls_through_to_noise(
     assert results[0].is_noise is True
     assert results[0].main_category == _NOISE_MAIN
     assert results[0].confidence == 0.0
+
+
+# ─── Batch alignment (regressions) ────────────────────────────────────────────
+
+
+def test_align_batch_maps_by_index_when_present() -> None:
+    """Out-of-order items are placed by their index, not their position."""
+    items = [
+        {"index": 3, "main": "C"},
+        {"index": 1, "main": "A"},
+        {"index": 2, "main": "B"},
+    ]
+    assert [r["main"] for r in _align_batch(items, 3)] == ["A", "B", "C"]
+
+
+def test_align_batch_dropped_item_does_not_shift_neighbours() -> None:
+    """The regression this guards: a model skipping question 2 used to shift
+    every later result onto the wrong question. The gap must stay a gap."""
+    items = [{"index": 1, "main": "A"}, {"index": 3, "main": "C"}]
+    out = _align_batch(items, 3)
+    assert out[0] is not None and out[0]["main"] == "A"
+    assert out[1] is None            # retried individually, not filled with C
+    assert out[2] is not None and out[2]["main"] == "C"
+
+
+def test_align_batch_positional_when_counts_match_and_no_index() -> None:
+    """No indices but the right number of items — position is sound here."""
+    items = [{"main": "A"}, {"main": "B"}]
+    assert [r["main"] for r in _align_batch(items, 2)] == ["A", "B"]
+
+
+def test_align_batch_miscount_without_index_yields_no_guesses() -> None:
+    """Too few items and no indices: every slot goes to per-question retry
+    rather than being padded into a guess."""
+    assert _align_batch([{"main": "A"}], 3) == [None, None, None]
+
+
+def test_align_batch_drops_unusable_indices_but_keeps_valid_ones() -> None:
+    """An out-of-range or duplicate index makes that one item untrustworthy, not
+    the whole batch — the item is dropped and its slot goes to retry."""
+    out = _align_batch([{"index": 9, "main": "A"}, {"index": 1, "main": "B"}], 2)
+    assert out[0] is not None and out[0]["main"] == "B"   # index 1 honoured
+    assert out[1] is None                                  # index 9 discarded
+
+    dup = _align_batch([{"index": 1, "main": "A"}, {"index": 1, "main": "B"}], 2)
+    assert dup[0] is not None and dup[0]["main"] == "A"    # first occurrence wins
+    assert dup[1] is None
+
+
+def test_align_batch_prefers_index_over_position_when_they_disagree() -> None:
+    """If the model states an index, that is its own claim about which question
+    the result belongs to, and it beats positional order."""
+    out = _align_batch([{"index": 2, "main": "SECOND"}, {"index": 1, "main": "FIRST"}], 2)
+    assert [r["main"] for r in out] == ["FIRST", "SECOND"]
+
+
+def test_align_batch_extra_items_are_dropped_not_misassigned() -> None:
+    items = [{"index": 1, "main": "A"}, {"index": 2, "main": "B"}, {"index": 3, "main": "C"}]
+    assert [r["main"] for r in _align_batch(items, 2)] == ["A", "B"]
+
+
+def test_batch_prompt_requests_an_index() -> None:
+    assert '"index"' in _build_batch_prompt([{"title": "T", "body": "B"}])
+
+
+# ─── Configurable batch size ──────────────────────────────────────────────────
+
+
+def _seed(engine: Any, n: int) -> list[Question]:
+    return [_insert_question(engine, so_id=900 + i) for i in range(n)]
+
+
+def _indexed_ok(n: int) -> list[dict[str, Any]]:
+    return [
+        {"index": i + 1, "main": "Technical",
+         "sub": "Performance or scaling issues", "confidence": 0.9, "reason": "r"}
+        for i in range(n)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_classify_respects_configured_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """classify_questions must chunk by settings.classify_batch_size, read at
+    call time so the value can change without a restart."""
+    monkeypatch.setattr("services.classifier.settings.classify_batch_size", 2)
+
+    engine = _make_engine()
+    questions = _seed(engine, 5)
+    sizes: list[int] = []
+
+    async def fake_batch(self: Any, qs: list[Any]) -> list[dict[str, Any] | None]:
+        sizes.append(len(qs))
+        return _indexed_ok(len(qs))
+
+    monkeypatch.setattr(ClassifierService, "_batch_llm_call", fake_batch)
+    await ClassifierService().classify_questions(questions, engine)
+
+    assert sizes == [2, 2, 1]
+
+
+@pytest.mark.asyncio
+async def test_classify_batch_size_zero_falls_back_to_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A misconfigured 0 must not produce an empty range() and silently classify
+    nothing."""
+    monkeypatch.setattr("services.classifier.settings.classify_batch_size", 0)
+
+    engine = _make_engine()
+    questions = _seed(engine, 2)
+
+    async def fake_batch(self: Any, qs: list[Any]) -> list[dict[str, Any] | None]:
+        return _indexed_ok(len(qs))
+
+    monkeypatch.setattr(ClassifierService, "_batch_llm_call", fake_batch)
+    results = await ClassifierService().classify_questions(questions, engine)
+    assert len(results) == 2

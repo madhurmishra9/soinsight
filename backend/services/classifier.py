@@ -22,7 +22,7 @@ from app.taxonomy import TAXONOMY, is_valid
 log = structlog.get_logger("soinsight.classifier")
 
 _LLM_MODEL = settings.ollama_model
-_BATCH_SIZE = 20
+_BATCH_SIZE = 20  # fallback only; settings.classify_batch_size wins at call time
 _RETRY_ATTEMPTS = 4
 _RETRY_WAIT_MIN = 1   # monkeypatch to 0 in tests
 _RETRY_WAIT_MAX = 30
@@ -208,7 +208,8 @@ def _build_batch_prompt(questions: list[dict[str, str]], strict: bool = False) -
         f"{_FEW_SHOT_BLOCK}\n\n"
         f"Now classify the following {n} question(s).\n"
         f"Output a JSON array of exactly {n} objects, one per question, in order.\n"
-        'Each object must have: "main", "sub", "confidence" (0.0-1.0), "reason".\n\n'
+        'Each object must have: "index" (the [n] number of the question it '
+        'classifies), "main", "sub", "confidence" (0.0-1.0), "reason".\n\n'
         f"QUESTIONS:\n{q_block}\n\nJSON array:"
     )
 
@@ -247,6 +248,63 @@ def _parse_single(raw: Any) -> tuple[str, str, float, str] | None:
     if not is_valid(main, sub):
         return None
     return main, sub, confidence, reason
+
+
+def _align_batch(items: list[Any], expected: int) -> list[dict[str, Any] | None]:
+    """Map a batch response back onto its questions, by index where possible.
+
+    Results are consumed positionally by the caller, so a model that drops or
+    reorders one entry in a batch would otherwise shift every later result onto
+    the wrong question — silently mislabelling them rather than failing. Three
+    cases, in order of trust:
+
+    1. Every item carries a valid, unique 1-based "index": map by it. Slots with
+       no item are left None.
+    2. No usable indices, but exactly the expected number of items: fall back to
+       position, which is only sound because the counts agree.
+    3. Anything else (miscount without indices): return all None.
+
+    A None slot is not a failure — the caller retries that question on its own
+    with a stricter prompt, which is slower but correct. Trading a little speed
+    for never attributing a category to the wrong question is the right side to
+    err on.
+    """
+    dicts = [it if isinstance(it, dict) else None for it in items]
+
+    # An item with a missing, unparseable, out-of-range, or duplicate index is
+    # dropped rather than invalidating the whole batch — its target is unknown,
+    # so the question it was meant for simply falls through to a retry.
+    indexed: dict[int, dict[str, Any]] = {}
+    for it in dicts:
+        if it is None or "index" not in it:
+            continue
+        try:
+            idx = int(it["index"])
+        except (TypeError, ValueError):
+            continue
+        if 1 <= idx <= expected and idx not in indexed:
+            indexed[idx] = it
+
+    if indexed:
+        if len(indexed) != expected:
+            log.warning(
+                "batch_partial_indices",
+                expected=expected,
+                returned=len(indexed),
+                detail="unmatched questions fall back to per-question classification",
+            )
+        return [indexed.get(i + 1) for i in range(expected)]
+
+    if len(dicts) == expected:
+        return list(dicts)
+
+    log.warning(
+        "batch_misaligned_no_index",
+        expected=expected,
+        returned=len(dicts),
+        detail="falling back to per-question classification for this batch",
+    )
+    return [None] * expected
 
 
 class ClassificationResult:
@@ -371,16 +429,13 @@ class ClassifierService:
             return [None] * len(questions)
 
         if isinstance(raw, list):
-            # Pad or trim to match question count (LLM may over/under-produce)
-            padded: list[dict[str, Any] | None] = list(raw) + [None] * len(questions)
-            return padded[: len(questions)]
+            return _align_batch(raw, len(questions))
 
         if isinstance(raw, dict):
             # Model may have wrapped the array in an object — unwrap the first list value
             for v in raw.values():
                 if isinstance(v, list):
-                    padded = list(v) + [None] * len(questions)
-                    return padded[: len(questions)]
+                    return _align_batch(v, len(questions))
             # Single-question batch: treat the object as the one result
             if len(questions) == 1:
                 return [raw]
@@ -485,8 +540,11 @@ class ClassifierService:
 
         # Process in batches
         results: list[ClassificationResult] = []
-        for batch_start in range(0, len(to_classify), _BATCH_SIZE):
-            batch = to_classify[batch_start : batch_start + _BATCH_SIZE]
+        # Read at call time so the setting can be changed without a restart, and
+        # so a nonsensical value can never produce a zero or negative step.
+        batch_size = max(1, int(settings.classify_batch_size or _BATCH_SIZE))
+        for batch_start in range(0, len(to_classify), batch_size):
+            batch = to_classify[batch_start : batch_start + batch_size]
             results.extend(await self._classify_batch(batch))
 
         # Persist
