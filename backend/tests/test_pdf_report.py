@@ -4,7 +4,6 @@ back."""
 
 from __future__ import annotations
 
-import io
 import re
 from typing import Any
 
@@ -190,7 +189,8 @@ def test_endpoint_returns_pdf_content_type() -> None:
 
     from app.db import get_session as app_db_get_session
     from routers.dismissals import router as dr
-    from routers.insights import get_session, router as insights_router
+    from routers.insights import get_session
+    from routers.insights import router as insights_router
 
     engine = create_engine(
         "sqlite:///:memory:",

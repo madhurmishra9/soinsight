@@ -32,9 +32,15 @@ from reportlab.platypus import (
 
 _BASE = getSampleStyleSheet()
 _H1 = ParagraphStyle("H1", parent=_BASE["Title"], fontSize=20, leading=24, spaceAfter=8)
-_H2 = ParagraphStyle("H2", parent=_BASE["Heading2"], fontSize=14, leading=18, spaceBefore=12, spaceAfter=6)
-_H3 = ParagraphStyle("H3", parent=_BASE["Heading3"], fontSize=12, leading=15, spaceBefore=8, spaceAfter=4)
-_BODY = ParagraphStyle("Body", parent=_BASE["BodyText"], fontSize=10, leading=13, spaceAfter=4, wordWrap="CJK")
+_H2 = ParagraphStyle(
+    "H2", parent=_BASE["Heading2"], fontSize=14, leading=18, spaceBefore=12, spaceAfter=6
+)
+_H3 = ParagraphStyle(
+    "H3", parent=_BASE["Heading3"], fontSize=12, leading=15, spaceBefore=8, spaceAfter=4
+)
+_BODY = ParagraphStyle(
+    "Body", parent=_BASE["BodyText"], fontSize=10, leading=13, spaceAfter=4, wordWrap="CJK"
+)
 _MUTED = ParagraphStyle(
     "Muted", parent=_BODY, textColor=colors.HexColor("#6b7280"), fontSize=9, leading=12,
 )
@@ -293,5 +299,7 @@ def render_pdf(summary: dict[str, Any], remediations: list[dict[str, Any]]) -> b
         title=f"SOInsight Report — {summary.get('product', '')}",
         author="SOInsight",
     )
-    doc.build(_build_story(summary, remediations), onFirstPage=_add_footer, onLaterPages=_add_footer)
+    doc.build(
+        _build_story(summary, remediations), onFirstPage=_add_footer, onLaterPages=_add_footer
+    )
     return buffer.getvalue()

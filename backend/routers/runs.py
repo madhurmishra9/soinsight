@@ -63,7 +63,9 @@ def _to_item(row: Run) -> RunItem:
 def list_runs(
     limit: int = Query(50, ge=1, le=500, description="Max rows to return"),
     offset: int = Query(0, ge=0, description="Skip this many newest rows"),
-    status: str | None = Query(None, description="Filter to one status (running/done/partial/failed)"),
+    status: str | None = Query(
+        None, description="Filter to one status (running/done/partial/failed)"
+    ),
     session: Session = Depends(get_session),
 ) -> list[RunItem]:
     """Return runs newest-first. Always returns a list — empty if no runs yet."""
