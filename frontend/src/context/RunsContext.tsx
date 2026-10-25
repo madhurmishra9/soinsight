@@ -90,6 +90,7 @@ interface RunsContextType {
 }
 
 const LOG_CAP = 500
+const CLASSIFY_PROGRESS_PREFIX = 'Classified '
 const FETCH_KEY = 'soinsight.runs.fetch'
 const ANALYSIS_KEY = 'soinsight.runs.analysis'
 const REMEDIATION_KEY = 'soinsight.runs.remediation'
@@ -265,6 +266,25 @@ export function RunsProvider({ children }: { children: ReactNode }) {
         tagSummaries: [...prev.tagSummaries, { tag, patterns, total, noise }],
         log: [...prev.log, { ts: now(), msg: `✓ ${tag}: ${total} signal, ${noise} noise, ${patterns} patterns`, kind: 'info' as const }].slice(-LOG_CAP),
       }))
+    } else if (ev.type === 'classify_progress') {
+      // One event per batch: update a single progress line in place instead of
+      // flooding the log (a large first run is hundreds of batches).
+      const entry: LogEntry = {
+        ts: now(),
+        msg: `${CLASSIFY_PROGRESS_PREFIX}${Number(ev.done ?? 0)}/${Number(ev.total ?? 0)} questions`,
+        kind: 'info',
+      }
+      setAnalysis((prev) => {
+        const last = prev.log[prev.log.length - 1]
+        const log = last?.msg.startsWith(CLASSIFY_PROGRESS_PREFIX)
+          ? [...prev.log.slice(0, -1), entry]
+          : [...prev.log, entry]
+        return { ...prev, log: log.slice(-LOG_CAP) }
+      })
+    } else if (ev.type === 'info') {
+      appendAnalysisLog({ ts: now(), msg: String(ev.message ?? ''), kind: 'info' })
+    } else if (ev.type === 'warning') {
+      appendAnalysisLog({ ts: now(), msg: `⚠ ${String(ev.message ?? '')}`, kind: 'error' })
     } else {
       const detail = Object.entries(ev).filter(([k]) => k !== 'type').map(([k, v]) => `${k}=${String(v)}`).join(' ')
       appendAnalysisLog({ ts: now(), msg: `[${ev.type}] ${detail}`, kind: 'info' })

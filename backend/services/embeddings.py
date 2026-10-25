@@ -14,6 +14,7 @@ import structlog
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.settings import settings
+from services import ollama
 
 log = structlog.get_logger("soinsight.embeddings")
 
@@ -51,7 +52,9 @@ class EmbeddingService:
         """Return the embedding vector for *text*. Retried on 429/5xx/timeout."""
         result: list[float] = []
         # Client created once per call; retries reuse the same connection pool.
-        async with httpx.AsyncClient(timeout=60.0, transport=self._transport) as http:
+        async with ollama.make_client(
+            self._ollama_url, timeout=60.0, transport=self._transport
+        ) as http:
             async for attempt in AsyncRetrying(
                 retry=retry_if_exception(_is_retryable),
                 stop=stop_after_attempt(_RETRY_ATTEMPTS),

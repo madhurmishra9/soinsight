@@ -263,11 +263,23 @@ database, so re-running Analysis after a small fetch costs seconds.
 category), *Noise* (classified `Misuse / Noise`), and *Patterns* (clusters that
 met the threshold in this run).
 
-The classifier always writes a classification row once it processes a question —
-even after repeated model failures it falls back to `Misuse / Noise` rather than
-leaving the question unprocessed. So a question with **no** row at all simply
-hasn't been through an Analysis run. That is exactly what Metrics'
-"Skipped / missing" counts.
+The log shows a live `Classified N/M questions` line while the model works.
+
+If the model replies but a question can't be mapped to a label even after a
+strict per-question retry, it is filed as `Misuse / Noise` with confidence 0 —
+and such rows are retried automatically on the next run. If Ollama can't be
+used at all (not running, wrong URL, model not installed), **nothing is
+recorded**: the run stops, the log shows a ⚠ warning with the reason, and the
+remaining questions stay unclassified for the next run. So a question with no
+row has simply not been classified yet — exactly what Metrics' "Skipped /
+missing" counts.
+
+**Small models.** The model's reply is constrained to the 29 valid labels with
+one entry per question, the instructions are sent as a fixed prefix Ollama can
+cache, and question bodies are HTML-stripped first. A 3-4B instruct model
+(`qwen2.5:3b-instruct`, `llama3.2:3b`, `phi4-mini`) is a sensible default on a
+CPU-only laptop; tune `CLASSIFY_BATCH_SIZE`, `CLASSIFY_CONCURRENCY` and
+`OLLAMA_NUM_CTX` in `backend/.env` (see `.env.example`).
 
 Analysis keeps running if you switch tabs, and survives a browser reload.
 
@@ -610,7 +622,8 @@ retry/backoff apply unchanged either way.
 | **Key patterns is empty but other Dashboard sections have data** | The Dashboard window doesn't match the window Analysis ran at. See [§14](#14-windows-date-ranges-and-the-one-gotcha). |
 | **A tab is empty entirely** | Fetch hasn't run for that tag/window, or Fetch ran but Analysis hasn't classified the new questions. Check Metrics → Skipped / missing. |
 | **401 Unauthorized** | Token invalid or rotated. Verify with `curl -H "Authorization: Bearer <key>" "<base>/tags?pageSize=100&page=1"`. |
-| **Everything classified as noise, `/api/generate` 404** | The model name doesn't match `ollama list`. Pick an installed model in Settings. |
+| **Analysis warns "not installed in Ollama" or "Cannot reach Ollama"** | Nothing was recorded for those questions. Pick a model from `ollama list` in Settings (or `ollama pull` it), check the Ollama URL, then re-run Analysis. |
+| **Old runs left many questions as noise with 0% confidence** | Those are fallback rows from runs where Ollama failed; the next Analysis run reclassifies them automatically. |
 | **API key field looks empty after a reload** | Expected — the key is never echoed back. If Settings says "A key is currently saved", it's still configured server-side. |
 | **Tags shown in red** | Not found on your instance — check spelling. Tags that merely couldn't be verified stay the normal colour. |
 | **Tag dropdown says it can't reach Stack Overflow** | Check Settings → Test connection. Manual tag entry still works meanwhile. |

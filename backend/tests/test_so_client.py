@@ -590,3 +590,72 @@ async def test_aenter_returns_self() -> None:
     client = SOClient(base_url="https://so.example.com/api/v3", auth=auth)
     async with client as entered:
         assert entered is client
+
+
+# ---------------------------------------------------------------------------
+# v3 paging envelope (camelCase, no has_more)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_pagination_follows_total_pages_envelope() -> None:
+    page1 = {"items": [{"id": i} for i in range(100)], "page": 1, "pageSize": 100,
+             "totalPages": 2, "totalCount": 200}
+    page2 = {"items": [{"id": i} for i in range(100, 200)], "page": 2, "pageSize": 100,
+             "totalPages": 2, "totalCount": 200}
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        r = _make_response(page1 if request.url.params[_PAGE_PARAM] == "1" else page2)
+        r.request = request
+        return r
+
+    client = await _client_with(httpx.MockTransport(handler))
+    collected: list[object] = []
+    async for page in client._paginate("/questions"):
+        collected.extend(page)
+
+    assert len(collected) == 200
+    assert calls == 2   # no wasted request for an empty page 3
+
+
+@pytest.mark.asyncio
+async def test_pagination_survives_instance_that_caps_page_size() -> None:
+    """Regression: an instance returning 30 per page (ignoring pageSize=100) was
+    read as 'last page' after the first 30 questions of every tag."""
+    def page(n: int, count: int) -> dict[str, object]:
+        return {"items": [{"id": n * 100 + i} for i in range(count)],
+                "page": n, "pageSize": 30, "totalCount": 70}
+
+    pages = {"1": page(1, 30), "2": page(2, 30), "3": page(3, 10)}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        r = _make_response(pages[request.url.params[_PAGE_PARAM]])
+        r.request = request
+        return r
+
+    client = await _client_with(httpx.MockTransport(handler))
+    collected: list[object] = []
+    async for p in client._paginate("/questions"):
+        collected.extend(p)
+    assert len(collected) == 70
+
+
+@pytest.mark.asyncio
+async def test_iter_questions_requests_newest_first() -> None:
+    """iter_questions stops at the first question older than `since`, which is
+    only correct when the API returns newest-created first."""
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        r = _make_response({"items": [], "totalPages": 0})
+        r.request = request
+        return r
+
+    client = await _client_with(httpx.MockTransport(handler))
+    async for _ in client.iter_questions("python", since=datetime(2024, 1, 1)):
+        pass
+    assert seen[0]["sort"] == "creation"
+    assert seen[0]["order"] == "desc"

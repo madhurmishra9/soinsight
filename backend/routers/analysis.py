@@ -14,9 +14,9 @@ from sqlmodel import Session, select
 
 from app.dates import resolve_range
 from app.db import engine as app_engine
-from app.models import Classification, Question
+from app.models import Question
 from services.aggregator import AggregatorService
-from services.classifier import ClassifierService
+from services.classifier import ClassifierService, select_unclassified
 
 log = structlog.get_logger("soinsight.routers.analysis")
 
@@ -68,21 +68,10 @@ async def _run_analysis(
 
         to_classify = [q for q in rows if wanted & _names(q)]
 
-        # Pre-filter: skip questions that already have a classification row.
-        # The classifier is idempotent but does a DB round-trip per question;
-        # filtering here avoids those round-trips for already-classified questions.
-        candidate_ids = [q.id for q in to_classify if q.id is not None]
-        already_classified: set[int] = set()
-        if candidate_ids:
-            with Session(app_engine) as chk:
-                already_classified = set(
-                    chk.exec(
-                        select(Classification.question_id).where(
-                            Classification.question_id.in_(candidate_ids)  # type: ignore[arg-type]
-                        )
-                    ).all()
-                )
-        unclassified = [q for q in to_classify if q.id not in already_classified]
+        # Same rule the classifier applies internally (no row yet, or a stale
+        # fallback row from a run where Ollama was down), computed once here so
+        # the progress message reports the real amount of work.
+        unclassified = select_unclassified(to_classify, app_engine)
         skipped_cls = len(to_classify) - len(unclassified)
         msg = f"Classifying {len(unclassified)} new questions"
         if skipped_cls:
@@ -91,8 +80,32 @@ async def _run_analysis(
         log.info("analysis_classification_started", run_id=run_id,
                  new=len(unclassified), already_classified=skipped_cls)
 
-        classifier = ClassifierService()
-        await classifier.classify_questions(unclassified, engine=app_engine)
+        async def _progress(done: int, total: int) -> None:
+            await queue.put({
+                "type": "classify_progress",
+                "done": done,
+                "total": total,
+                "message": f"Classified {done}/{total} questions",
+            })
+
+        if unclassified:
+            classifier = ClassifierService()
+            await classifier.classify_questions(
+                unclassified, engine=app_engine, progress=_progress
+            )
+            if classifier.unavailable_error:
+                # Nothing is recorded for these questions — they stay unclassified
+                # and the next run retries them — so say so instead of reporting
+                # a successful run over an empty dashboard.
+                await queue.put({
+                    "type": "warning",
+                    "message": (
+                        f"{classifier.skipped} question(s) were not classified: "
+                        f"{classifier.unavailable_error} "
+                        "Showing results for what is classified; re-run analysis "
+                        "once this is fixed."
+                    ),
+                })
 
         svc = AggregatorService()
         await svc.run(

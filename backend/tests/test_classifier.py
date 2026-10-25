@@ -21,6 +21,7 @@ from services.classifier import (
     _NOISE_MAIN,
     _NOISE_SUB_DUPLICATE,
     _NOISE_SUB_INVALID,
+    _SYSTEM_PROMPT,
     ClassifierService,
     _align_batch,
     _build_batch_prompt,
@@ -98,16 +99,22 @@ class _MockEmbedSvc:
 # ─── _build_*_prompt smoke tests ─────────────────────────────────────────────
 
 
-def test_batch_prompt_contains_taxonomy() -> None:
-    prompt = _build_batch_prompt([{"title": "T", "body": "B"}])
-    assert "Technical" in prompt
-    assert "Reliability issues or instability" in prompt
+def test_system_prompt_contains_taxonomy() -> None:
+    # The taxonomy lives in the static system prompt (KV-cached by Ollama), not
+    # in the per-call prompt.
+    assert "Technical > Reliability issues or instability" in _SYSTEM_PROMPT
+    assert "Security / Compliance" in _SYSTEM_PROMPT
+    assert "Adoption / Migration" in _SYSTEM_PROMPT
 
 
-def test_single_prompt_contains_taxonomy() -> None:
-    prompt = _build_single_prompt("My title", "My body")
-    assert "Security / Compliance" in prompt
-    assert "Adoption / Migration" in prompt
+def test_batch_prompt_contains_questions_only() -> None:
+    prompt = _build_batch_prompt([{"title": "My title", "body": "My body"}])
+    assert "My title" in prompt and "My body" in prompt
+    assert "Reliability issues or instability" not in prompt
+
+
+def test_single_prompt_is_a_batch_of_one() -> None:
+    assert _build_single_prompt("T", "B") == _build_batch_prompt([{"title": "T", "body": "B"}])
 
 
 def test_batch_prompt_strict_adds_warning() -> None:
@@ -132,8 +139,15 @@ def test_parse_valid_classification() -> None:
     assert conf == 0.9
 
 
-def test_parse_invalid_main_returns_none() -> None:
-    assert _parse_single(_valid_cls(main="Unknown Category")) is None
+def test_parse_invalid_main_recovered_from_unambiguous_sub() -> None:
+    # The sub-category alone identifies exactly one taxonomy pair.
+    result = _parse_single(_valid_cls(main="Unknown Category"))
+    assert result is not None and result[:2] == ("Technical", "Reliability issues or instability")
+
+
+def test_parse_contradicting_main_and_sub_returns_none() -> None:
+    # A real main paired with another main's sub is a contradiction, not a typo.
+    assert _parse_single(_valid_cls(main="Product")) is None
 
 
 def test_parse_invalid_sub_returns_none() -> None:
@@ -220,8 +234,8 @@ async def test_invalid_batch_response_triggers_single_retry(
         nonlocal call_count
         call_count += 1
         payload = json.loads(req.content)
-        # Batch prompt uniquely contains "JSON array"; single prompt has "single JSON object"
-        if "json array" in payload["prompt"].lower():
+        # Only the strict per-question retry carries "CRITICAL".
+        if "CRITICAL" not in payload["prompt"]:
             r = _ollama_resp([{"main": "WRONG", "sub": "WRONG", "confidence": 0.5, "reason": "x"}])
         else:
             # Single strict retry — return valid
@@ -297,7 +311,7 @@ async def test_batch_survives_one_bad_item(monkeypatch: pytest.MonkeyPatch) -> N
         nonlocal batch_count
         payload = json.loads(req.content)
         prompt: str = payload["prompt"]
-        if "array" in prompt.lower() or "questions" in prompt.lower():
+        if "CRITICAL" not in prompt:
             # Batch call: good, invalid, good
             batch_count += 1
             r = _ollama_resp([good, {"bad": "data"}, good])
@@ -485,9 +499,10 @@ def test_is_retryable_timeout() -> None:
     assert _is_retryable(httpx.ReadTimeout("mock timeout")) is True
 
 
-def test_is_retryable_connect_timeout() -> None:
+def test_is_retryable_connect_timeout_is_not_retried() -> None:
+    # Nothing is listening: back-off only delays the "Ollama unreachable" report.
     from services.classifier import _is_retryable
-    assert _is_retryable(httpx.ConnectTimeout("mock timeout")) is True
+    assert _is_retryable(httpx.ConnectTimeout("mock timeout")) is False
 
 
 def test_is_retryable_429() -> None:
@@ -585,30 +600,245 @@ async def test_batch_single_question_dict_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_http_failure_falls_through_to_noise(
+async def test_unreachable_ollama_records_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    If the batch HTTP call raises a non-retryable exception (ConnectError),
-    _batch_llm_call returns all-None → every question falls back to noise.
-    The batch must not crash.
+    Regression: when Ollama could not be reached, every question used to be
+    saved as Misuse / Noise — and since classification is idempotent, it then
+    stayed noise forever. Now nothing is recorded, the run stops early, and the
+    reason is reported so the questions are picked up on the next run.
     """
     monkeypatch.setattr("services.classifier._RETRY_WAIT_MIN", 0)
     monkeypatch.setattr("services.classifier._RETRY_WAIT_MAX", 0)
+    monkeypatch.setattr("services.classifier.settings.classify_batch_size", 1)
 
     engine = _make_engine()
-    q = _insert_question(engine, so_id=70)
+    qs = [_insert_question(engine, so_id=70), _insert_question(engine, so_id=71)]
+    calls = 0
 
     def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         raise httpx.ConnectError("connection refused")
+
+    svc = ClassifierService(ollama_url="http://ollama.test", transport=httpx.MockTransport(handler))
+    results = await svc.classify_questions(qs, engine)
+
+    assert results == []
+    assert calls == 1                       # stopped after the first failure
+    assert svc.skipped == 2
+    assert svc.unavailable_error and "Cannot reach Ollama" in svc.unavailable_error
+    with Session(engine) as session:
+        assert session.exec(select(Classification)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_missing_model_is_reported_not_filed_as_noise() -> None:
+    engine = _make_engine()
+    q = _insert_question(engine, so_id=72)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "model 'nope:1b' not found"}, request=req)
 
     svc = ClassifierService(ollama_url="http://ollama.test", transport=httpx.MockTransport(handler))
     results = await svc.classify_questions([q], engine)
 
-    assert len(results) == 1
+    assert results == []
+    assert svc.unavailable_error and "ollama pull" in svc.unavailable_error
+    with Session(engine) as session:
+        assert session.exec(select(Classification)).all() == []
+
+
+@pytest.mark.asyncio
+async def test_stale_fallback_rows_are_reclassified() -> None:
+    """Rows left by the old failure path (noise, confidence 0.0) are retried and
+    replaced; genuine verdicts are left alone."""
+    engine = _make_engine()
+    stale = _insert_question(engine, so_id=80)
+    kept = _insert_question(engine, so_id=81)
+    with Session(engine) as session:
+        session.add(Classification(
+            question_id=stale.id, main_category=_NOISE_MAIN,
+            sub_category=_NOISE_SUB_INVALID, confidence=0.0, is_noise=True, model="m",
+        ))
+        session.add(Classification(
+            question_id=kept.id, main_category="Product",
+            sub_category="Feature Gap", confidence=0.9, is_noise=False, model="m",
+        ))
+        session.commit()
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return _ollama_resp({"q1": {"label": "Technical > Performance or scaling issues",
+                                    "confidence": 0.8}})
+
+    svc = ClassifierService(ollama_url="http://ollama.test", transport=httpx.MockTransport(handler))
+    results = await svc.classify_questions([stale, kept], engine)
+
+    assert [r.question_id for r in results] == [stale.id]
+    with Session(engine) as session:
+        rows = {c.question_id: c for c in session.exec(select(Classification)).all()}
+    assert len(rows) == 2
+    assert rows[stale.id].sub_category == "Performance or scaling issues"
+    assert rows[kept.id].sub_category == "Feature Gap"
+
+
+# ─── Constrained output / small-model optimisations ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_request_is_constrained_cached_and_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("services.classifier.settings.classify_batch_size", 3)
+    engine = _make_engine()
+    qs = [_insert_question(engine, so_id=100 + i, title=f"Question number {i}") for i in range(3)]
+    seen: list[dict[str, Any]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return _ollama_resp({
+            f"q{i + 1}": {"label": "Technical > Performance or scaling issues", "confidence": 0.9}
+            for i in range(3)
+        })
+
+    svc = ClassifierService(ollama_url="http://ollama.test", transport=httpx.MockTransport(handler))
+    results = await svc.classify_questions(qs, engine)
+
+    assert len(seen) == 1 and len(results) == 3
+    body = seen[0]
+    # Static instructions go in `system` — identical on every call, so Ollama
+    # can reuse the KV cache for them.
+    assert body["system"] == _SYSTEM_PROMPT
+    # Grammar-constrained: exactly q1..q3, each one of the taxonomy labels.
+    fmt = body["format"]
+    assert fmt["required"] == ["q1", "q2", "q3"]
+    labels = fmt["properties"]["q1"]["properties"]["label"]["enum"]
+    assert "Technical > Performance or scaling issues" in labels and len(labels) == 29
+    opts = body["options"]
+    assert opts["temperature"] == 0 and opts["num_ctx"] >= 4096
+    assert 0 < opts["num_predict"] <= 3 * 40 + 64
+    assert body["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_legacy_ollama_without_schema_support_falls_back_to_json_mode() -> None:
+    from services import ollama as ollama_mod
+
+    engine = _make_engine()
+    q = _insert_question(engine, so_id=110)
+    formats: list[Any] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        formats.append(body["format"])
+        if isinstance(body["format"], dict):
+            return httpx.Response(400, json={"error": "invalid format"}, request=req)
+        assert "think" not in body
+        return _ollama_resp({"q1": {"label": "Product > Feature Gap", "confidence": 0.9}})
+
+    url = "http://legacy-ollama.test"
+    try:
+        svc = ClassifierService(ollama_url=url, transport=httpx.MockTransport(handler))
+        results = await svc.classify_questions([q], engine)
+    finally:
+        ollama_mod._LEGACY_SERVERS.discard(url)
+
+    assert results[0].sub_category == "Feature Gap"
+    assert isinstance(formats[0], dict) and formats[1] == "json"
+
+
+@pytest.mark.asyncio
+async def test_contentless_question_skips_the_model() -> None:
+    engine = _make_engine()
+    q = _insert_question(engine, so_id=120, title="test")
+    with Session(engine) as session:
+        row = session.get(Question, q.id)
+        assert row is not None
+        row.body = "<p>test</p>"
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        q = row
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise AssertionError("model must not be called")
+
+    svc = ClassifierService(ollama_url="http://ollama.test", transport=httpx.MockTransport(handler))
+    results = await svc.classify_questions([q], engine)
     assert results[0].is_noise is True
-    assert results[0].main_category == _NOISE_MAIN
-    assert results[0].confidence == 0.0
+    assert results[0].confidence > 0      # a verdict, not a stale fallback
+
+
+@pytest.mark.asyncio
+async def test_progress_is_reported_per_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("services.classifier.settings.classify_batch_size", 2)
+    engine = _make_engine()
+    qs = [_insert_question(engine, so_id=130 + i) for i in range(5)]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        n = len(json.loads(req.content)["format"]["required"])
+        return _ollama_resp({
+            f"q{i + 1}": {"label": "Product > Feature Gap", "confidence": 0.9} for i in range(n)
+        })
+
+    ticks: list[tuple[int, int]] = []
+
+    async def progress(done: int, total: int) -> None:
+        ticks.append((done, total))
+
+    svc = ClassifierService(ollama_url="http://ollama.test", transport=httpx.MockTransport(handler))
+    await svc.classify_questions(qs, engine, progress=progress)
+    assert ticks == [(2, 5), (4, 5), (5, 5)]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_batches_classify_everything(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("services.classifier.settings.classify_batch_size", 2)
+    monkeypatch.setattr("services.classifier.settings.classify_concurrency", 3)
+    engine = _make_engine()
+    qs = [_insert_question(engine, so_id=140 + i) for i in range(7)]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        n = len(json.loads(req.content)["format"]["required"])
+        return _ollama_resp({
+            f"q{i + 1}": {"label": "Product > Feature Gap", "confidence": 0.9} for i in range(n)
+        })
+
+    svc = ClassifierService(ollama_url="http://ollama.test", transport=httpx.MockTransport(handler))
+    results = await svc.classify_questions(qs, engine)
+    assert sorted(r.question_id for r in results) == sorted(q.id for q in qs)
+
+
+def test_oversized_batch_is_split_to_fit_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("services.classifier.settings.ollama_num_ctx", 2048)
+    svc = ClassifierService(ollama_url="http://ollama.test")
+    long_body = "word " * 400
+    prompt = _build_batch_prompt([{"title": "t", "body": long_body}] * 10)
+    assert svc._fits_context(prompt, 10) is False
+
+
+def test_body_html_is_stripped_before_truncation() -> None:
+    from services.classifier import _clean_text
+    raw = "<p>Error&nbsp;from <code>gcloud sql connect</code>:</p>\n<pre>timeout</pre>"
+    assert _clean_text(raw) == "Error from gcloud sql connect : timeout"
+    assert len(_clean_text("x " * 500, 50)) <= 52
+
+
+def test_every_taxonomy_pair_has_a_definition() -> None:
+    from app.taxonomy import TAXONOMY
+    from services.classifier import _DEFINITIONS
+    pairs = {(m, s) for m, subs in TAXONOMY.items() for s in subs}
+    assert pairs == set(_DEFINITIONS)
+
+
+def test_parse_accepts_label_shape_and_sloppy_text() -> None:
+    assert _parse_single({"label": "Product > Feature Gap", "confidence": 0.8})[:3] == (
+        "Product", "Feature Gap", 0.8)
+    # Case/spacing slips in plain JSON mode are recovered exactly, never guessed.
+    assert _parse_single({"label": "product>feature gap", "confidence": 90})[:3] == (
+        "Product", "Feature Gap", 0.9)
+    assert _parse_single({"label": "Product > Something else"}) is None
 
 
 # ─── Batch alignment (regressions) ────────────────────────────────────────────
@@ -670,8 +900,9 @@ def test_align_batch_extra_items_are_dropped_not_misassigned() -> None:
     assert [r["main"] for r in _align_batch(items, 2)] == ["A", "B"]
 
 
-def test_batch_prompt_requests_an_index() -> None:
-    assert '"index"' in _build_batch_prompt([{"title": "T", "body": "B"}])
+def test_batch_prompt_requests_one_key_per_question() -> None:
+    prompt = _build_batch_prompt([{"title": "T", "body": "B"}, {"title": "U", "body": "C"}])
+    assert '"q1", "q2"' in prompt
 
 
 # ─── Configurable batch size ──────────────────────────────────────────────────
