@@ -6,6 +6,10 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8-sig",
         case_sensitive=False,
+        # A .env holding a key this class doesn't declare (an old setting, a
+        # typo, a var meant for another tool) used to abort startup with
+        # pydantic's "extra inputs are not permitted". Ignore unknown keys.
+        extra="ignore",
     )
 
     so_base_url: str = "https://your-instance.stackenterprise.co/api/v3"
@@ -28,11 +32,28 @@ class Settings(BaseSettings):
     # thousands of short structured ones — so a small, fast classifier can be
     # paired with a larger model here without slowing the pipeline down.
     remediation_model: str = ""
-    # Questions per classification prompt. Smaller batches produce shorter output
-    # lists, which small models are far less likely to miscount; larger batches
-    # re-send the taxonomy and few-shot prefix less often. 8 or so suits a 3B
-    # model, 20 suits an 8B one.
-    classify_batch_size: int = 20
+    # Context window requested on every Ollama call. Ollama's own default is
+    # smaller than SOInsight's prompts on many versions, and an overflowing
+    # prompt is cut from the FRONT — dropping the taxonomy. Keep this fixed:
+    # changing it between calls makes Ollama reload the model.
+    ollama_num_ctx: int = 8192
+    # How long Ollama keeps the model loaded after a call. Reloading a model on
+    # CPU costs seconds to tens of seconds; analysis runs make many calls.
+    ollama_keep_alive: str = "30m"
+    # Per-request timeout (seconds) for Ollama generation calls. CPU inference of
+    # a full batch can legitimately take minutes.
+    ollama_timeout: int = 300
+    # Questions per classification prompt. The static instructions are sent as
+    # a cached system prefix and the reply is grammar-constrained to exactly one
+    # entry per question, so batch size mostly trades latency per call against
+    # the number of calls. 8-12 suits 3-4B models, 15-20 suits 7-8B ones.
+    classify_batch_size: int = 10
+    # Batches classified in parallel. Only helps when Ollama itself serves
+    # requests in parallel (OLLAMA_NUM_PARALLEL > 1, typically on a GPU). On a
+    # CPU-only machine leave at 1.
+    classify_concurrency: int = 1
+    # Characters of cleaned question body (HTML stripped) sent per question.
+    classify_body_chars: int = 400
     default_tags: str = "cloudsql,cloudspanner,cloudstorage"
     # When true, ingestion also pulls each new question's answers (one extra
     # API call per newly-inserted question that reports answer_count > 0).

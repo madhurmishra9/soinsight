@@ -33,6 +33,8 @@ _PAGE_PARAM = "page"          # guessed — verify in Swagger
 _PAGE_SIZE_PARAM = "pageSize"  # guessed — verify in Swagger
 _DATE_FROM_PARAM = "fromdate"
 _DATE_TO_PARAM = "todate"
+_SORT_PARAM = "sort"
+_ORDER_PARAM = "order"
 # ---------------------------------------------------------------------------
 
 _PAGE_SIZE = 100
@@ -48,6 +50,29 @@ def _is_retryable(exc: BaseException) -> bool:
         return exc.response.status_code in (429, 500, 502, 503, 504)
     return False
 
+
+
+def _envelope_has_more(data: dict[str, Any], page: int, n_items: int) -> bool:
+    """Whether another page exists, from a v3 paging envelope.
+
+    SO Enterprise v3 pages as {items, totalCount, page, pageSize, totalPages}
+    (camelCase) and has no ``has_more``. Guessing from ``len(items) == 100`` is
+    wrong both ways: an instance that caps or ignores ``pageSize`` returns full
+    pages of, say, 30 — read as "last page", silently truncating every tag —
+    while an exact multiple of 100 costs a wasted extra request.
+    """
+    if "has_more" in data:
+        return bool(data["has_more"])
+    total_pages = data.get("totalPages")
+    if isinstance(total_pages, int):
+        current = data.get("page")
+        return (current if isinstance(current, int) else page) < total_pages
+    total_count = data.get("totalCount")
+    page_size = data.get("pageSize")
+    if isinstance(total_count, int) and isinstance(page_size, int) and page_size > 0:
+        return page * page_size < total_count
+    expected = page_size if isinstance(page_size, int) and page_size > 0 else _PAGE_SIZE
+    return n_items >= expected
 
 
 class SOAuth:
@@ -161,7 +186,7 @@ class SOClient:
                 has_more = len(items) == _PAGE_SIZE
             else:
                 items = data.get("items", [])
-                has_more = data.get("has_more", len(items) == _PAGE_SIZE)
+                has_more = _envelope_has_more(data, page, len(items))
 
             if not items:
                 break
@@ -249,6 +274,12 @@ class SOClient:
         params: dict[str, Any] = {
             "tags": tag,
             _DATE_FROM_PARAM: int(since.timestamp()),
+            # The loop below stops at the first question older than *since*,
+            # which is only correct when results come newest-first. v3 sorts by
+            # activity by default, so an old question with a fresh answer ended
+            # the walk early and every newer question after it was never fetched.
+            _SORT_PARAM: "creation",
+            _ORDER_PARAM: "desc",
         }
         if until is not None:
             params[_DATE_TO_PARAM] = int(until.timestamp())
@@ -332,5 +363,7 @@ class SOClient:
 # ---------------------------------------------------------------------------
 
 def make_client() -> SOClient:
-    auth = SOAuth(mode="api_key", api_key=settings.so_api_key or None)
+    # Bearer, like every other call site: SO Enterprise v3 authenticates with
+    # "Authorization: Bearer <token>"; X-API-Key alone returns 401.
+    auth = SOAuth(mode="bearer", api_key=settings.so_api_key or None)
     return SOClient(base_url=settings.so_base_url, auth=auth)

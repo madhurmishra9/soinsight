@@ -66,9 +66,17 @@ hash includes the model name — so the next **Update guide** regenerates them.
 Two settings in `backend/.env` matter as much as the model itself:
 
 ```bash
-CLASSIFY_BATCH_SIZE=8       # questions per prompt — try 8 with a 3B, 20 with an 8B
+CLASSIFY_BATCH_SIZE=10      # questions per prompt — 8-12 with a 3B, 15-20 with an 8B
 REMEDIATION_MODEL=          # blank = same model as classification
 ```
+
+> **Note:** the application now sends its own system prompt on every call
+> (taxonomy, one-line label definitions, examples) and constrains the reply with
+> a JSON schema, so the Modelfile's `SYSTEM` block is overridden at request
+> time. The model still contributes its deterministic sampling and context
+> parameters, and the app pins `num_ctx` itself too (`OLLAMA_NUM_CTX`), so any
+> stock instruct model — `qwen2.5:3b-instruct`, `llama3.2:3b`, `phi4-mini` — is
+> safe to use directly.
 
 **`CLASSIFY_BATCH_SIZE`** trades throughput against a small model's ability to
 hold a long output list together. A batch of 20 asks for 20 JSON objects in one

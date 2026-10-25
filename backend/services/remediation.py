@@ -35,6 +35,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 from app.dates import resolve_range
 from app.models import Answer, Classification, Question, Remediation
 from app.settings import settings
+from services import ollama
 from services.aggregator import _question_has_tag
 
 log = structlog.get_logger("soinsight.remediation")
@@ -72,6 +73,8 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.TimeoutException):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
+        if ollama.is_capability_error(exc):
+            return False  # handled by downgrading the request, not by waiting
         return exc.response.status_code in (429, 500, 502, 503, 504)
     return False
 
@@ -170,31 +173,43 @@ class RemediationService:
 
     # ── Ollama call (mirrors the classifier's shape; transport is injectable) ──
 
-    async def _call_ollama(self, prompt: str) -> dict[str, Any]:
+    async def _post(self, http: httpx.AsyncClient, payload: dict[str, Any]) -> dict[str, Any]:
         result: dict[str, Any] = {}
-        async with httpx.AsyncClient(timeout=180.0, transport=self._transport) as http:
-            async for attempt in AsyncRetrying(
-                retry=retry_if_exception(_is_retryable),
-                stop=stop_after_attempt(_RETRY_ATTEMPTS),
-                wait=wait_exponential(multiplier=1, min=_RETRY_WAIT_MIN, max=_RETRY_WAIT_MAX),
-                reraise=True,
-            ):
-                with attempt:
-                    r = await http.post(
-                        f"{self._ollama_url}/api/generate",
-                        json={
-                            "model": _model_name(),
-                            "prompt": prompt,
-                            "format": "json",
-                            "stream": False,
-                            "options": {"temperature": 0},
-                        },
-                    )
-                    r.raise_for_status()
-                    outer = r.json()
-                    parsed = json.loads(outer["response"])
-                    result = parsed if isinstance(parsed, dict) else {}
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception(_is_retryable),
+            stop=stop_after_attempt(_RETRY_ATTEMPTS),
+            wait=wait_exponential(multiplier=1, min=_RETRY_WAIT_MIN, max=_RETRY_WAIT_MAX),
+            reraise=True,
+        ):
+            with attempt:
+                r = await http.post(f"{self._ollama_url}/api/generate", json=payload)
+                r.raise_for_status()
+                outer = r.json()
+                parsed = json.loads(outer["response"])
+                result = parsed if isinstance(parsed, dict) else {}
         return result
+
+    async def _call_ollama(self, prompt: str) -> dict[str, Any]:
+        # Shared helper: ignores proxy/CA env vars for a local Ollama, pins the
+        # context window (these prompts carry several Q&A sources and would
+        # otherwise be truncated from the front, losing the grounding rules) and
+        # disables hidden "thinking" on reasoning models.
+        payload = ollama.build_generate_payload(
+            self._ollama_url, model=_model_name(), prompt=prompt,
+        )
+        async with ollama.make_client(
+            self._ollama_url, timeout=max(180.0, float(settings.ollama_timeout)),
+            transport=self._transport,
+        ) as http:
+            try:
+                return await self._post(http, payload)
+            except httpx.HTTPStatusError as exc:
+                if ollama.is_capability_error(exc) and ollama.has_optional_fields(payload):
+                    log.warning("ollama_legacy_mode", status=exc.response.status_code)
+                    return await self._post(http, ollama.downgrade_payload(
+                        self._ollama_url, payload
+                    ))
+                raise
 
     # ── Cluster gathering ──────────────────────────────────────────────────────
 

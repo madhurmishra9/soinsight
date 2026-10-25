@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -22,6 +21,7 @@ from routers.runs import router as runs_router
 from routers.scheduler import router as scheduler_router
 from routers.scheduler import set_scheduler
 from routers.settings import router as settings_router
+from services import ollama
 from services.scheduler import SchedulerService
 
 log = get_logger("soinsight.main")
@@ -29,7 +29,7 @@ log = get_logger("soinsight.main")
 
 async def _check_ollama() -> bool:
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with ollama.make_client(settings.ollama_url, timeout=5.0) as client:
             r = await client.get(f"{settings.ollama_url}/api/tags")
             return r.status_code == 200
     except Exception:

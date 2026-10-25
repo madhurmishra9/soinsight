@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 
 def utcnow() -> datetime:
@@ -8,12 +8,12 @@ def utcnow() -> datetime:
     The SQLite columns are stored as naive datetimes, so we strip tzinfo
     here to keep schema compatibility.
     """
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def utcfromtimestamp(ts: float) -> datetime:
     """Naive UTC datetime from a POSIX timestamp — deprecation-safe replacement."""
-    return datetime.fromtimestamp(ts, timezone.utc).replace(tzinfo=None)
+    return datetime.fromtimestamp(ts, UTC).replace(tzinfo=None)
 
 
 def resolve_range(

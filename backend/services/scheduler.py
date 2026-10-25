@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import structlog
@@ -26,10 +26,10 @@ from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from app.dates import utcnow
-from app.models import Classification, Question, ScheduleConfig
+from app.models import Question, ScheduleConfig
 from app.settings import settings
 from services.aggregator import AggregatorService
-from services.classifier import ClassifierService
+from services.classifier import ClassifierService, select_unclassified
 from services.ingestion import IngestService
 from services.so_client import SOAuth, SOClient
 
@@ -117,12 +117,10 @@ class SchedulerService:
     def _get_unclassified(self) -> list[Question]:
         """Return questions that do not yet have a classification record."""
         with Session(self._engine) as session:
-            classified_ids: set[int] = set(
-                session.exec(select(Classification.question_id)).all()
-            )
             all_questions: list[Question] = list(session.exec(select(Question)).all())
-            # Filter inside the session while all attributes are still loaded.
-            return [q for q in all_questions if q.id not in classified_ids]
+        # Same rule the classifier applies: no row yet, or a stale fallback row
+        # left by a run where Ollama was down (those must not stay noise forever).
+        return select_unclassified(all_questions, self._engine)
 
     # ── Full refresh pipeline ──────────────────────────────────────────────────
 
@@ -191,8 +189,16 @@ class SchedulerService:
             return
         log.info("scheduled_classify_start", count=len(unclassified))
         try:
-            svc = ClassifierService(ollama_url=self._ollama_url)
+            # Built per run with the *current* Ollama URL, so a change made in
+            # Settings after startup applies to the next scheduled run too.
+            svc = ClassifierService()
             await svc.classify_questions(unclassified, self._engine)
+            if svc.unavailable_error:
+                log.error(
+                    "scheduled_classify_incomplete",
+                    skipped=svc.skipped,
+                    error=svc.unavailable_error,
+                )
         except Exception as exc:
             log.error("scheduled_classify_error", error=str(exc))
 

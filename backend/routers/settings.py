@@ -1,9 +1,9 @@
-import httpx
 import structlog
 from fastapi import APIRouter
 from pydantic import BaseModel, SecretStr
 
 from app.settings import settings as env_settings
+from services import ollama
 from services.so_client import SOAuth, SOClient
 
 log = structlog.get_logger("soinsight.routers.settings")
@@ -76,6 +76,10 @@ async def store_config(body: SOConfig) -> SOConfigResponse:
     _current_config["team"] = body.team
     if body.ollama_url:
         _current_config["ollama_url"] = body.ollama_url
+        # The classifier, remediation and embedding services read the URL from
+        # app settings; storing it only here meant a URL changed in the UI was
+        # shown as saved but every Ollama call still went to the .env value.
+        env_settings.ollama_url = body.ollama_url.rstrip("/")
     if body.ollama_model:
         env_settings.ollama_model = body.ollama_model
 
@@ -95,7 +99,7 @@ async def list_ollama_models() -> OllamaModelsResponse:
     """List models installed in the local Ollama instance."""
     url = _current_config.get("ollama_url") or env_settings.ollama_url
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with ollama.make_client(url, timeout=5.0) as client:
             r = await client.get(f"{url.rstrip('/')}/api/tags")
             r.raise_for_status()
             data = r.json()

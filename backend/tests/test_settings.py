@@ -224,3 +224,32 @@ def test_test_connection_uses_get_not_bracket_access_for_ok(
 
     assert r.status_code == 200
     assert r.json()["reachable"] is False
+
+
+def test_ollama_url_saved_in_ui_reaches_the_services(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the URL was stored for display only, while the classifier,
+    remediation and embeddings kept calling the .env value."""
+    from app.settings import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "ollama_url", "http://localhost:11434")
+    client.post(
+        "/api/settings",
+        json={"base_url": "https://x/api/v3", "ollama_url": "http://gpu-box:11434/"},
+    )
+    assert app_settings.ollama_url == "http://gpu-box:11434"
+
+    from services.classifier import ClassifierService
+    assert ClassifierService()._ollama_url == "http://gpu-box:11434"
+
+
+def test_unknown_env_keys_do_not_abort_startup(tmp_path: Any) -> None:
+    """Regression: any .env key the Settings class didn't declare raised
+    pydantic's 'extra inputs are not permitted' and the backend never started."""
+    from app.settings import Settings
+
+    env = tmp_path / ".env"
+    env.write_text("OLLAMA_MODEL=qwen2.5:3b\nSOME_OLD_SETTING=1\nLLM_MODEL=x\n")
+    s = Settings(_env_file=str(env))  # type: ignore[call-arg]
+    assert s.ollama_model == "qwen2.5:3b"
